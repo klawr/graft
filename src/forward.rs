@@ -1,14 +1,39 @@
 use std::collections::{HashMap, HashSet};
+use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 
 /// Spawns a detached `graft _forward` daemon that manages port forwarding for
 /// `container`. Returns immediately; the daemon outlives the calling process.
+/// Daemon stderr goes to a log file; the path is printed so the user can tail it.
 pub fn spawn_daemon(container: &str, remote: &Option<String>, static_ports: &[u16]) {
     let exe = match std::env::current_exe() {
         Ok(e) => e,
         Err(_) => return,
     };
+
+    let log = log_path(container);
+    if let Some(dir) = log.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let log_file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("[graft] could not open forward log {}: {e}", log.display());
+            return;
+        }
+    };
+
+    println!("[graft] port forwarding log: {}", log.display());
 
     let mut cmd = Command::new(exe);
     if let Some(r) = remote {
@@ -28,66 +53,188 @@ pub fn spawn_daemon(container: &str, remote: &Option<String>, static_ports: &[u1
     let _ = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(log_file)
         .spawn();
 }
 
 /// Port-forwarding daemon. Polls `/proc/net/tcp` and `/proc/net/tcp6` every 2 s
-/// and maintains one socat (local) or `ssh -L` (remote) child process per
-/// listening port. Exits when the container stops.
+/// and maintains one forwarder per listening port. For local Docker, a built-in
+/// Rust TCP proxy is used; for `--remote`, an `ssh -L` tunnel. Exits when the
+/// container stops.
 pub fn run_daemon(container: &str, remote: &Option<String>, _static_ports: &[u16]) {
     let container_ip = match get_container_ip(container, remote) {
         Some(ip) => ip,
-        None => return,
+        None => {
+            eprintln!("[graft forward] could not determine container IP — port forwarding disabled");
+            return;
+        }
     };
+    eprintln!("[graft forward] container IP: {container_ip}");
 
-    // Track active forwarder children (port → child).
-    let mut active: HashMap<u16, Child> = HashMap::new();
-    // Ports where spawn returned None (binary not found); don't retry these.
-    let mut unspawnable: HashSet<u16> = HashSet::new();
+    let mut active: HashMap<u16, Forwarder> = HashMap::new();
 
     loop {
         if !is_container_running(container, remote) {
+            eprintln!("[graft forward] container stopped, exiting");
             break;
         }
 
         let listening = poll_listening_ports(container, remote);
 
-        // Kill forwarders for ports that stopped listening or whose process died.
-        active.retain(|&port, child| {
-            let alive = listening.contains(&port)
-                && child.try_wait().map(|s| s.is_none()).unwrap_or(false);
+        // Drop forwarders for ports that stopped listening or whose process died.
+        active.retain(|&port, fwd| {
+            let alive = listening.contains(&port) && fwd.is_alive();
             if !alive {
-                let _ = child.kill();
+                eprintln!("[graft forward] stopped forwarding port {port}");
             }
             alive
         });
 
-        // Spawn forwarders for newly-listening ports.
+        // Start forwarders for newly-listening ports.
         for &port in &listening {
-            if active.contains_key(&port) || unspawnable.contains(&port) {
+            if active.contains_key(&port) {
                 continue;
             }
-            match if let Some(r) = remote {
-                spawn_ssh_tunnel(port, &container_ip, r)
+            let fwd = if let Some(r) = remote {
+                eprintln!("[graft forward] port {port} — ssh -L {port}:{container_ip}:{port} {r}");
+                Forwarder::ssh_tunnel(port, &container_ip, r)
             } else {
-                spawn_socat(port, &container_ip)
-            } {
-                Some(child) => {
-                    active.insert(port, child);
+                eprintln!("[graft forward] port {port} — proxy 0.0.0.0:{port} → {container_ip}:{port}");
+                Forwarder::proxy(port, container_ip.clone())
+            };
+            match fwd {
+                Some(f) => {
+                    eprintln!("[graft forward] forwarding port {port}");
+                    active.insert(port, f);
                 }
                 None => {
-                    unspawnable.insert(port);
+                    eprintln!("[graft forward] could not forward port {port}");
                 }
             }
         }
 
         std::thread::sleep(Duration::from_secs(2));
     }
+}
 
-    for (_, mut child) in active {
-        let _ = child.kill();
+// ── Forwarder ─────────────────────────────────────────────────────────────────
+
+enum Forwarder {
+    Proxy(ProxyHandle),
+    Ssh(Child),
+}
+
+impl Forwarder {
+    fn proxy(port: u16, container_ip: String) -> Option<Self> {
+        ProxyHandle::spawn(port, container_ip).map(Forwarder::Proxy)
     }
+
+    fn ssh_tunnel(port: u16, container_ip: &str, remote: &str) -> Option<Self> {
+        Command::new("ssh")
+            .args([
+                "-N",
+                "-o", "BatchMode=yes",
+                "-o", "ExitOnForwardFailure=yes",
+                "-L", &format!("{port}:{container_ip}:{port}"),
+                remote,
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()
+            .map(Forwarder::Ssh)
+    }
+
+    fn is_alive(&mut self) -> bool {
+        match self {
+            Forwarder::Proxy(h) => !h.stop.load(Ordering::Relaxed),
+            Forwarder::Ssh(child) => child.try_wait().map(|s| s.is_none()).unwrap_or(false),
+        }
+    }
+}
+
+impl Drop for Forwarder {
+    fn drop(&mut self) {
+        match self {
+            Forwarder::Proxy(h) => h.stop.store(true, Ordering::Relaxed),
+            Forwarder::Ssh(child) => { let _ = child.kill(); }
+        }
+    }
+}
+
+// ── Built-in TCP proxy ────────────────────────────────────────────────────────
+
+struct ProxyHandle {
+    stop: Arc<AtomicBool>,
+}
+
+impl ProxyHandle {
+    fn spawn(port: u16, container_ip: String) -> Option<Self> {
+        let listener = TcpListener::bind(format!("0.0.0.0:{port}")).ok()?;
+        listener.set_nonblocking(true).ok()?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = Arc::clone(&stop);
+
+        std::thread::spawn(move || {
+            loop {
+                if stop_thread.load(Ordering::Relaxed) {
+                    break;
+                }
+                match listener.accept() {
+                    Ok((client, _)) => {
+                        let target = format!("{container_ip}:{port}");
+                        std::thread::spawn(move || {
+                            if let Ok(server) = TcpStream::connect(&target) {
+                                proxy_conn(client, server);
+                            }
+                        });
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        Some(ProxyHandle { stop })
+    }
+}
+
+// Bidirectional copy between two TCP streams. Runs client→server in a spawned
+// thread and server→client in the current thread; each half shuts down its write
+// end on EOF so the peer sees a clean close.
+fn proxy_conn(client: TcpStream, server: TcpStream) {
+    let mut c_r = client;
+    let mut s_r = server;
+    let mut s_w = match s_r.try_clone() {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let mut c_w = match c_r.try_clone() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let t = std::thread::spawn(move || {
+        std::io::copy(&mut c_r, &mut s_w).ok();
+        s_w.shutdown(std::net::Shutdown::Write).ok();
+    });
+
+    std::io::copy(&mut s_r, &mut c_w).ok();
+    c_w.shutdown(std::net::Shutdown::Write).ok();
+    t.join().ok();
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+fn log_path(container: &str) -> PathBuf {
+    let short = container.get(..12).unwrap_or(container);
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from(".local/share"))
+        .join("graft")
+        .join(format!("forward-{short}.log"))
 }
 
 fn poll_listening_ports(container: &str, remote: &Option<String>) -> HashSet<u16> {
@@ -143,7 +290,6 @@ fn parse_proc_net_tcp(data: &str) -> HashSet<u16> {
 fn get_container_ip(container: &str, remote: &Option<String>) -> Option<String> {
     let mut cmd = Command::new("docker");
     crate::docker::docker_host_env(&mut cmd, remote);
-    // Emit each network's IP on its own line; take the first non-empty one.
     cmd.args([
         "inspect",
         "--format",
@@ -169,36 +315,6 @@ fn is_container_running(container: &str, remote: &Option<String>) -> bool {
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
         .unwrap_or(false)
-}
-
-fn spawn_socat(port: u16, container_ip: &str) -> Option<Child> {
-    Command::new("socat")
-        .args([
-            &format!("TCP-LISTEN:{port},fork,reuseaddr"),
-            &format!("TCP:{container_ip}:{port}"),
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()
-}
-
-fn spawn_ssh_tunnel(port: u16, container_ip: &str, remote: &str) -> Option<Child> {
-    Command::new("ssh")
-        .args([
-            "-N",
-            "-o",
-            "ExitOnForwardFailure=yes",
-            "-L",
-            &format!("{port}:{container_ip}:{port}"),
-            remote,
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()
 }
 
 #[cfg(test)]

@@ -53,7 +53,6 @@ On the host:
 - `docker` (and `docker compose` for `graft up`)
 - `tmux` (for the interactive session; or set `multiplexer = "none"`)
 - `ldd` and `patchelf` (to resolve and re-link grafted binaries)
-- `socat` (for port forwarding with `graft up`; optional — forwarding is skipped if absent)
 - `oras` (only if your devcontainer uses `features`)
 - `ssh` (only for `--remote`)
 
