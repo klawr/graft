@@ -26,7 +26,7 @@ graft up -r user@host ./project # remote + explicit path
 ### From a release (prebuilt binary)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/klawr/graft/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/klawr/graft/master/install.sh | sh
 ```
 
 Downloads the latest static Linux binary into `~/.local/bin`. Overrides:
