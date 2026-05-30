@@ -1,10 +1,11 @@
 name: release
 
-# Tag a version to build the binaries and publish a GitHub release that
-# install.sh can download:  git tag v0.1.0 && git push --tags
+# Triggered when a release is published on GitHub. Builds static musl binaries
+# for x86_64 and aarch64 and attaches them as .tar.gz assets.
+# To ship: create a release on GitHub tagged vX.Y.Z — CI does the rest.
 on:
-  push:
-    tags: ["v*"]
+  release:
+    types: [published]
 
 permissions:
   contents: write
@@ -19,9 +20,6 @@ jobs:
           - aarch64-unknown-linux-musl
     steps:
       - uses: actions/checkout@v4
-      # Builds a static musl binary (cross-compiling aarch64) and uploads a
-      # `graft-<target>.tar.gz` asset to the release. graft has no C deps, so
-      # musl-static just works.
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: graft

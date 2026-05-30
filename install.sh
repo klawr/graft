@@ -2,17 +2,13 @@
 # graft installer — downloads a prebuilt release binary from GitHub.
 #
 #   # latest release:
-#   curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/klawr/graft/main/install.sh | sh
 #
-#   # a specific version / custom location:
+#   # a specific version / custom install location:
 #   GRAFT_VERSION=v0.1.0 GRAFT_BIN_DIR=/usr/local/bin ./install.sh
-#
-# Override the repo without editing this file via GRAFT_REPO=owner/name.
 set -eu
 
-# ─── set this to your GitHub repo (owner/name) ──────────────────────────────────
-REPO="${GRAFT_REPO:-OWNER/REPO}"
-# ────────────────────────────────────────────────────────────────────────────────
+REPO="${GRAFT_REPO:-klawr/graft}"
 
 VERSION="${GRAFT_VERSION:-latest}"
 BIN_DIR="${GRAFT_BIN_DIR:-$HOME/.local/bin}"
@@ -20,8 +16,6 @@ BIN_DIR="${GRAFT_BIN_DIR:-$HOME/.local/bin}"
 err() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 info() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
-
-[ "$REPO" = "OWNER/REPO" ] && err "set REPO at the top of this script (or GRAFT_REPO=owner/name)"
 
 os="$(uname -s)"
 arch="$(uname -m)"

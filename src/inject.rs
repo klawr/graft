@@ -165,7 +165,7 @@ fn inject_config(docker: &Docker, container: &str, home: &str, item: &Injectable
         return Ok(());
     }
 
-    println!("[graft] injecting {} config", item.name);
+    println!("[graft] injecting {} config → {target}", item.name);
     ensure_parent(docker, container, &target)?;
     // Replace any existing target before copying: `docker cp` of a directory
     // onto an existing directory nests it (dest/src) instead of overwriting, so

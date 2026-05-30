@@ -29,9 +29,12 @@ graft up -r user@host ./project # remote + explicit path
 curl -fsSL https://raw.githubusercontent.com/klawr/graft/main/install.sh | sh
 ```
 
-`install.sh` downloads the static Linux binary into `~/.local/bin`. Override
-the destination with `GRAFT_BIN_DIR=/usr/local/bin`, or pin a version with
-`GRAFT_VERSION=v0.1.0`.
+Downloads the latest static Linux binary into `~/.local/bin`. Overrides:
+
+| variable | default | meaning |
+| --- | --- | --- |
+| `GRAFT_BIN_DIR` | `~/.local/bin` | install location |
+| `GRAFT_VERSION` | latest | pin to e.g. `v0.1.0` |
 
 ### From source
 
