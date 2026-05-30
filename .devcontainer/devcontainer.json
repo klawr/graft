@@ -1,0 +1,7 @@
+{
+  "name": "graft-dev",
+  "dockerComposeFile": "compose.yaml",
+  "service": "dev",
+  "workspaceFolder": "/workspace",
+  "postCreateCommand": "cargo fetch"
+}

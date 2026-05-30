@@ -1,0 +1,6 @@
+services:
+  dev:
+    build: .
+    command: sleep infinity
+    volumes:
+      - ..:/workspace
