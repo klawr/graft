@@ -798,12 +798,7 @@ fn ssh_find_and_read_config(host: &str, project_path: &Path) -> Result<(PathBuf,
 // One SSH call: hash every file under `dir` (plus any `extra` paths) using
 // sha256sum, then hash the combined output for a stable fingerprint.
 fn ssh_hash_inputs(host: &str, config_path: &Path, extra: &[PathBuf]) -> Result<String> {
-    let dir = if config_path.parent().and_then(Path::file_name) == Some(OsStr::new(".devcontainer"))
-    {
-        config_path.parent().unwrap_or(config_path)
-    } else {
-        config_path.parent().unwrap_or(config_path)
-    };
+    let dir = config_path.parent().unwrap_or(config_path);
     let mut targets = vec![crate::docker::shell_quote(&dir.to_string_lossy())];
     for e in extra {
         targets.push(crate::docker::shell_quote(&e.to_string_lossy()));

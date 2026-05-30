@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker exec *)",
+      "Bash(git -C /home/me/devel/graft status --short src/elf.rs)",
+      "Bash(./target/release/graft exec *)",
+      "Bash(python3 /tmp/graft_ptytest.py)",
+      "Bash(cargo build *)",
+      "Bash(cargo clippy *)",
+      "Bash(nvim --headless +qa)",
+      "Bash(echo \"host-exit=$?\")",
+      "Read(//home/me/.local/share/nvim/lazy/nvim-treesitter/lua/nvim-treesitter/**)",
+      "Bash(docker cp *)",
+      "Bash(timeout 20 python3 .pty_capture.py)",
+      "Bash(echo \"rc=$?\")",
+      "Bash(tail -40 .pty_out.txt)",
+      "Bash(cargo fmt *)",
+      "Bash(cargo test *)",
+      "Bash(install -Dm755 target/release/graft ~/.local/bin/graft)",
+      "Bash(cp ~/.config/graft/config.toml /tmp/cfg.bak)",
+      "Bash(cp /tmp/cfg.bak ~/.config/graft/config.toml)",
+      "Bash(tmux list-sessions *)",
+      "Bash(xargs -r -n1 tmux kill-session -t)"
+    ]
+  }
+}

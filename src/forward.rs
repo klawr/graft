@@ -287,9 +287,10 @@ fn parse_proc_net_tcp(data: &str) -> HashSet<u16> {
         }
         if let Some(hex) = local.split(':').next_back()
             && let Ok(port) = u16::from_str_radix(hex, 16)
-                && port > 0 {
-                    ports.insert(port);
-                }
+            && port > 0
+        {
+            ports.insert(port);
+        }
     }
     ports
 }

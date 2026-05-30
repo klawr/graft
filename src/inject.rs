@@ -320,7 +320,11 @@ fn inject_docker_path(docker: &Docker, container: &str) -> Result<()> {
     let script = format!("export PATH={}\n", crate::docker::shell_quote(&path));
     let tmp = TempFile::write("graft-path.sh", script.as_bytes())?;
     docker.exec(container, &["mkdir", "-p", "/etc/profile.d"])?;
-    docker.cp(&tmp.path().to_string_lossy(), container, "/etc/profile.d/graft-path.sh")
+    docker.cp(
+        &tmp.path().to_string_lossy(),
+        container,
+        "/etc/profile.d/graft-path.sh",
+    )
 }
 
 fn container_home(docker: &Docker, container: &str) -> String {
