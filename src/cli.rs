@@ -10,7 +10,7 @@ use std::path::PathBuf;
         their shared-library dependencies into a running Docker container and drops \
         you into a shell. It also drives devcontainers: `graft up` reads \
         devcontainer.json, starts the container, installs features, runs lifecycle \
-        hooks, grafts your environment on top, and forwards container ports to the host.",
+        hooks, grafts your environment on top, and forwards container ports to the host."
 )]
 pub struct Cli {
     /// SSH remote to operate on (user@host); all Docker operations run against

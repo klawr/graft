@@ -22,13 +22,26 @@ pub fn graft(container: &str, remote: &Option<String>) -> Result<()> {
 
     for item in &config.inject {
         if let Some(binary) = &item.binary {
-            inject_binary(&docker, container, &home, item, binary.to_string_lossy().as_ref())?;
+            inject_binary(
+                &docker,
+                container,
+                &home,
+                item,
+                binary.to_string_lossy().as_ref(),
+            )?;
         }
         if let Some(cfg) = &item.config {
-            inject_config(&docker, container, &home, item, cfg.to_string_lossy().as_ref())?;
+            inject_config(
+                &docker,
+                container,
+                &home,
+                item,
+                cfg.to_string_lossy().as_ref(),
+            )?;
         }
     }
 
+    inject_docker_path(&docker, container)?;
     configure_git_safe(&docker, container, &config.git.safe_directories)?;
     inject_aliases(&docker, container, &config.aliases)?;
 
@@ -66,7 +79,13 @@ fn configure_git_safe(docker: &Docker, container: &str, dirs: &[String]) -> Resu
     Ok(())
 }
 
-fn inject_binary(docker: &Docker, container: &str, home: &str, item: &Injectable, binary: &str) -> Result<()> {
+fn inject_binary(
+    docker: &Docker,
+    container: &str,
+    home: &str,
+    item: &Injectable,
+    binary: &str,
+) -> Result<()> {
     let graft_binary = format!("{GRAFT_BIN}/{}", item.name);
     let target = resolve_home(
         item.target_binary
@@ -152,7 +171,13 @@ fn patch_binary(binary: &str, linker_name: &str) -> Result<TempFile> {
     Ok(tmp)
 }
 
-fn inject_config(docker: &Docker, container: &str, home: &str, item: &Injectable, cfg: &str) -> Result<()> {
+fn inject_config(
+    docker: &Docker,
+    container: &str,
+    home: &str,
+    item: &Injectable,
+    cfg: &str,
+) -> Result<()> {
     let target = resolve_home(
         item.target_config
             .as_deref()
@@ -281,6 +306,23 @@ fn ensure_parent(docker: &Docker, container: &str, path: &str) -> Result<()> {
     docker.mkdir_p(container, &[&parent])
 }
 
+// Login shells source /etc/profile, which on many distros resets PATH to a
+// minimal system default — dropping anything added via Docker ENV. Read the
+// container's current PATH and write it into /etc/profile.d/ so it survives.
+fn inject_docker_path(docker: &Docker, container: &str) -> Result<()> {
+    let path = match docker.exec_capture(container, &["printenv", "PATH"]) {
+        Ok(p) => p.trim().to_string(),
+        Err(_) => return Ok(()),
+    };
+    if path.is_empty() {
+        return Ok(());
+    }
+    let script = format!("export PATH={}\n", crate::docker::shell_quote(&path));
+    let tmp = TempFile::write("graft-path.sh", script.as_bytes())?;
+    docker.exec(container, &["mkdir", "-p", "/etc/profile.d"])?;
+    docker.cp(&tmp.path().to_string_lossy(), container, "/etc/profile.d/graft-path.sh")
+}
+
 fn container_home(docker: &Docker, container: &str) -> String {
     docker
         .exec_capture(container, &["sh", "-c", "echo $HOME"])
@@ -382,9 +424,15 @@ mod tests {
 
     #[test]
     fn resolve_home_expands_tilde() {
-        assert_eq!(resolve_home("~/.config/nvim", "/home/vscode"), "/home/vscode/.config/nvim");
+        assert_eq!(
+            resolve_home("~/.config/nvim", "/home/vscode"),
+            "/home/vscode/.config/nvim"
+        );
         assert_eq!(resolve_home("~", "/home/vscode"), "/home/vscode");
-        assert_eq!(resolve_home("/usr/local/bin/nvim", "/home/vscode"), "/usr/local/bin/nvim");
+        assert_eq!(
+            resolve_home("/usr/local/bin/nvim", "/home/vscode"),
+            "/usr/local/bin/nvim"
+        );
     }
 
     #[test]

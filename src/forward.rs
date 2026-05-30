@@ -65,7 +65,9 @@ pub fn run_daemon(container: &str, remote: &Option<String>, _static_ports: &[u16
     let container_ip = match get_container_ip(container, remote) {
         Some(ip) => ip,
         None => {
-            eprintln!("[graft forward] could not determine container IP — port forwarding disabled");
+            eprintln!(
+                "[graft forward] could not determine container IP — port forwarding disabled"
+            );
             return;
         }
     };
@@ -99,7 +101,9 @@ pub fn run_daemon(container: &str, remote: &Option<String>, _static_ports: &[u16
                 eprintln!("[graft forward] port {port} — ssh -L {port}:{container_ip}:{port} {r}");
                 Forwarder::ssh_tunnel(port, &container_ip, r)
             } else {
-                eprintln!("[graft forward] port {port} — proxy 0.0.0.0:{port} → {container_ip}:{port}");
+                eprintln!(
+                    "[graft forward] port {port} — proxy 0.0.0.0:{port} → {container_ip}:{port}"
+                );
                 Forwarder::proxy(port, container_ip.clone())
             };
             match fwd {
@@ -133,9 +137,12 @@ impl Forwarder {
         Command::new("ssh")
             .args([
                 "-N",
-                "-o", "BatchMode=yes",
-                "-o", "ExitOnForwardFailure=yes",
-                "-L", &format!("{port}:{container_ip}:{port}"),
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-L",
+                &format!("{port}:{container_ip}:{port}"),
                 remote,
             ])
             .stdin(Stdio::null())
@@ -158,7 +165,9 @@ impl Drop for Forwarder {
     fn drop(&mut self) {
         match self {
             Forwarder::Proxy(h) => h.stop.store(true, Ordering::Relaxed),
-            Forwarder::Ssh(child) => { let _ = child.kill(); }
+            Forwarder::Ssh(child) => {
+                let _ = child.kill();
+            }
         }
     }
 }
@@ -276,13 +285,11 @@ fn parse_proc_net_tcp(data: &str) -> HashSet<u16> {
         if state != "0A" {
             continue;
         }
-        if let Some(hex) = local.split(':').last() {
-            if let Ok(port) = u16::from_str_radix(hex, 16) {
-                if port > 0 {
+        if let Some(hex) = local.split(':').next_back()
+            && let Ok(port) = u16::from_str_radix(hex, 16)
+                && port > 0 {
                     ports.insert(port);
                 }
-            }
-        }
     }
     ports
 }

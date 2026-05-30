@@ -543,7 +543,7 @@ fn parse_forward_ports(values: Option<Vec<serde_json::Value>>) -> Vec<u16> {
             serde_json::Value::String(s) => {
                 // Accept "PORT", "HOST:PORT", "PORT/proto" — take the last
                 // colon-separated token, then strip any "/proto" suffix.
-                let token = s.split(':').last().unwrap_or(&s);
+                let token = s.split(':').next_back().unwrap_or(&s);
                 token.split('/').next().unwrap_or(token).parse().ok()
             }
             _ => None,
@@ -767,14 +767,16 @@ fn ssh_find_and_read_config(host: &str, project_path: &Path) -> Result<(PathBuf,
             .join("devcontainer.json")
             .to_string_lossy(),
     );
-    let flat = crate::docker::shell_quote(
-        &project_path.join(".devcontainer.json").to_string_lossy(),
-    );
+    let flat =
+        crate::docker::shell_quote(&project_path.join(".devcontainer.json").to_string_lossy());
     let script = format!(
         "for f in {dc} {flat}; do [ -f \"$f\" ] && {{ printf '%s\\0' \"$f\"; cat \"$f\"; exit 0; }}; done; exit 1"
     );
     let out = Command::new("ssh")
-        .args([host, &format!("sh -c {}", crate::docker::shell_quote(&script))])
+        .args([
+            host,
+            &format!("sh -c {}", crate::docker::shell_quote(&script)),
+        ])
         .output()
         .context("spawning ssh")?;
     if !out.status.success() {
@@ -796,7 +798,8 @@ fn ssh_find_and_read_config(host: &str, project_path: &Path) -> Result<(PathBuf,
 // One SSH call: hash every file under `dir` (plus any `extra` paths) using
 // sha256sum, then hash the combined output for a stable fingerprint.
 fn ssh_hash_inputs(host: &str, config_path: &Path, extra: &[PathBuf]) -> Result<String> {
-    let dir = if config_path.parent().and_then(Path::file_name) == Some(OsStr::new(".devcontainer")) {
+    let dir = if config_path.parent().and_then(Path::file_name) == Some(OsStr::new(".devcontainer"))
+    {
         config_path.parent().unwrap_or(config_path)
     } else {
         config_path.parent().unwrap_or(config_path)
@@ -810,7 +813,10 @@ fn ssh_hash_inputs(host: &str, config_path: &Path, extra: &[PathBuf]) -> Result<
         targets.join(" ")
     );
     let out = Command::new("ssh")
-        .args([host, &format!("sh -c {}", crate::docker::shell_quote(&script))])
+        .args([
+            host,
+            &format!("sh -c {}", crate::docker::shell_quote(&script)),
+        ])
         .output()
         .context("spawning ssh")?;
     // sha256sum output: "<hex>  -\n" — take just the hex token.
@@ -1004,7 +1010,11 @@ fn hash_inputs(config_path: &Path, extra: &[PathBuf], remote: &Option<String>) -
         files.extend_from_slice(extra);
         for f in files {
             if let Ok(bytes) = std::fs::read(&f) {
-                let name = f.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                let name = f
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
                 entries.push((name, normalize_for_hash(&f, bytes)));
             }
         }
