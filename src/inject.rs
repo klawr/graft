@@ -18,12 +18,14 @@ pub fn graft(container: &str, remote: &Option<String>) -> Result<()> {
     let docker = Docker::new(remote);
     docker.mkdir_p(container, &[GRAFT_LIB, GRAFT_BIN, GRAFT_DIR])?;
 
+    let home = container_home(&docker, container);
+
     for item in &config.inject {
         if let Some(binary) = &item.binary {
-            inject_binary(&docker, container, item, binary.to_string_lossy().as_ref())?;
+            inject_binary(&docker, container, &home, item, binary.to_string_lossy().as_ref())?;
         }
         if let Some(cfg) = &item.config {
-            inject_config(&docker, container, item, cfg.to_string_lossy().as_ref())?;
+            inject_config(&docker, container, &home, item, cfg.to_string_lossy().as_ref())?;
         }
     }
 
@@ -64,12 +66,14 @@ fn configure_git_safe(docker: &Docker, container: &str, dirs: &[String]) -> Resu
     Ok(())
 }
 
-fn inject_binary(docker: &Docker, container: &str, item: &Injectable, binary: &str) -> Result<()> {
+fn inject_binary(docker: &Docker, container: &str, home: &str, item: &Injectable, binary: &str) -> Result<()> {
     let graft_binary = format!("{GRAFT_BIN}/{}", item.name);
-    let target = item
-        .target_binary
-        .clone()
-        .unwrap_or_else(|| format!("/usr/local/bin/{}", item.name));
+    let target = resolve_home(
+        item.target_binary
+            .as_deref()
+            .unwrap_or(&format!("/usr/local/bin/{}", item.name)),
+        home,
+    );
 
     if item.skip_if_exists && docker.file_exists(container, &graft_binary) {
         println!("[graft] {} already exists, skipping", item.name);
@@ -104,7 +108,10 @@ fn inject_binary(docker: &Docker, container: &str, item: &Injectable, binary: &s
                 ],
             )?;
         }
-        None => docker.cp(binary, container, &graft_binary)?,
+        None => {
+            let real = std::fs::canonicalize(binary).unwrap_or_else(|_| PathBuf::from(binary));
+            docker.cp(&real.to_string_lossy(), container, &graft_binary)?;
+        }
     }
 
     docker.exec(container, &["chmod", "+x", &graft_binary])?;
@@ -145,11 +152,13 @@ fn patch_binary(binary: &str, linker_name: &str) -> Result<TempFile> {
     Ok(tmp)
 }
 
-fn inject_config(docker: &Docker, container: &str, item: &Injectable, cfg: &str) -> Result<()> {
-    let target = item
-        .target_config
-        .clone()
-        .unwrap_or_else(|| format!("/root/.config/{}", item.name));
+fn inject_config(docker: &Docker, container: &str, home: &str, item: &Injectable, cfg: &str) -> Result<()> {
+    let target = resolve_home(
+        item.target_config
+            .as_deref()
+            .unwrap_or(&format!("~/.config/{}", item.name)),
+        home,
+    );
 
     if item.skip_if_exists && docker.path_exists(container, &target) {
         println!("[graft] {} config already present, skipping", item.name);
@@ -272,6 +281,27 @@ fn ensure_parent(docker: &Docker, container: &str, path: &str) -> Result<()> {
     docker.mkdir_p(container, &[&parent])
 }
 
+fn container_home(docker: &Docker, container: &str) -> String {
+    docker
+        .exec_capture(container, &["sh", "-c", "echo $HOME"])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "/root".to_string())
+}
+
+// Expands a leading `~` to the container user's home directory.
+fn resolve_home(path: &str, home: &str) -> String {
+    let home = home.trim_end_matches('/');
+    if path == "~" {
+        home.to_string()
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        format!("{home}/{rest}")
+    } else {
+        path.to_string()
+    }
+}
+
 fn file_stem(path: &str) -> String {
     Path::new(path)
         .file_name()
@@ -337,7 +367,7 @@ impl Drop for TempFile {
 
 #[cfg(test)]
 mod tests {
-    use super::file_stem;
+    use super::{file_stem, resolve_home};
 
     #[test]
     fn takes_basename() {
@@ -348,5 +378,17 @@ mod tests {
     #[test]
     fn falls_back_when_no_basename() {
         assert_eq!(file_stem("/"), "graft");
+    }
+
+    #[test]
+    fn resolve_home_expands_tilde() {
+        assert_eq!(resolve_home("~/.config/nvim", "/home/vscode"), "/home/vscode/.config/nvim");
+        assert_eq!(resolve_home("~", "/home/vscode"), "/home/vscode");
+        assert_eq!(resolve_home("/usr/local/bin/nvim", "/home/vscode"), "/usr/local/bin/nvim");
+    }
+
+    #[test]
+    fn resolve_home_strips_trailing_slash_from_home() {
+        assert_eq!(resolve_home("~/.config", "/root/"), "/root/.config");
     }
 }
