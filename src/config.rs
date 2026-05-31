@@ -91,6 +91,16 @@ fn default_true() -> bool {
     true
 }
 
+fn expand_tilde(path: PathBuf) -> PathBuf {
+    let s = path.to_string_lossy();
+    if (s.starts_with("~/") || s == "~")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(&s[2..]);
+    }
+    path
+}
+
 impl Config {
     pub fn load() -> Result<Self> {
         let path = config_path();
@@ -99,7 +109,12 @@ impl Config {
         }
         let raw = std::fs::read_to_string(&path)
             .with_context(|| format!("reading config at {}", path.display()))?;
-        toml::from_str(&raw).context("parsing graft config")
+        let mut cfg: Config = toml::from_str(&raw).context("parsing graft config")?;
+        for item in &mut cfg.inject {
+            item.binary = item.binary.take().map(expand_tilde);
+            item.config = item.config.take().map(expand_tilde);
+        }
+        Ok(cfg)
     }
 
     fn default() -> Self {
