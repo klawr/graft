@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::docker::Docker;
 use crate::forward::PortForward;
@@ -247,6 +247,8 @@ fn load_spec(project_path: &Path, remote: &Option<String>) -> Result<Spec> {
             dir: base_dir.clone(),
             files,
             service,
+            // Compose project names must be lowercase.
+            project: container_name(project_path).to_lowercase(),
         };
         (Box::new(backend), hash_extra)
     } else if image.is_some() || build.is_some() || docker_file.is_some() {
@@ -305,11 +307,23 @@ struct ComposeBackend {
     dir: PathBuf,
     files: Vec<String>,
     service: String,
+    // Explicit compose project name (-p). Without it, compose derives the
+    // project from the compose file's directory — which is ".devcontainer"
+    // for most devcontainers, so *every* such project on a daemon would share
+    // one project name and graft could adopt a different project's container.
+    project: String,
 }
 
 impl Backend for ComposeBackend {
     fn existing(&self) -> Result<Option<String>> {
-        let id = compose_ps(&self.remote, &self.dir, &self.files, &self.service, true)?;
+        let id = compose_ps(
+            &self.remote,
+            &self.dir,
+            &self.project,
+            &self.files,
+            &self.service,
+            true,
+        )?;
         Ok((!id.is_empty()).then_some(id))
     }
 
@@ -325,25 +339,51 @@ impl Backend for ComposeBackend {
         // Feature create-flags go in a temporary compose override, appended as
         // the last `-f` so it layers over the project's files without changing
         // the project identity (the first file still sets the project dir).
+        // Compose reads it client-side, so with --remote it is written on the
+        // remote host (where compose runs).
         let mut files = self.files.clone();
         let override_file = if flags.is_empty() {
             None
         } else {
-            let path = std::env::temp_dir()
-                .join(format!("graft-compose-override-{}.yml", std::process::id()));
-            std::fs::write(&path, flags.compose_override(&self.service))
-                .context("writing compose override")?;
-            files.push(path.to_string_lossy().into_owned());
+            let content = flags.compose_override(&self.service);
+            let path = match &self.remote {
+                None => {
+                    let p = std::env::temp_dir()
+                        .join(format!("graft-compose-override-{}.yml", std::process::id()));
+                    std::fs::write(&p, &content).context("writing compose override")?;
+                    p.to_string_lossy().into_owned()
+                }
+                Some(host) => {
+                    let p = format!("/tmp/graft-compose-override-{}.yml", std::process::id());
+                    ssh_write_file(host, &p, &content).context("writing compose override")?;
+                    p
+                }
+            };
+            files.push(path.clone());
             Some(path)
         };
 
-        let result = compose_up(&self.remote, &self.dir, &files, extra);
+        let result = compose_up(&self.remote, &self.dir, &self.project, &files, extra);
         if let Some(p) = &override_file {
-            let _ = std::fs::remove_file(p);
+            match &self.remote {
+                None => {
+                    let _ = std::fs::remove_file(p);
+                }
+                Some(host) => {
+                    let _ = ssh_output(host, &format!("rm -f {}", crate::docker::shell_quote(p)));
+                }
+            }
         }
         result?;
 
-        let id = compose_ps(&self.remote, &self.dir, &self.files, &self.service, false)?;
+        let id = compose_ps(
+            &self.remote,
+            &self.dir,
+            &self.project,
+            &self.files,
+            &self.service,
+            false,
+        )?;
         if id.is_empty() {
             bail!(
                 "could not find running container for service '{}'",
@@ -451,7 +491,14 @@ impl ContainerBackend {
                     a.push(format!("{k}={v}"));
                 }
                 a.push(context.to_string_lossy().into_owned());
-                docker_run(&self.remote, &a).context("docker build")?;
+                // The build context (and -f dockerfile) are read client-side,
+                // so with --remote the build runs on the remote host via ssh.
+                let mut cmd = docker_files_command(&self.remote, None, &a);
+                crate::verbose::trace(&cmd);
+                let status = cmd.status().context("docker build")?;
+                if !status.success() {
+                    bail!("docker build failed");
+                }
                 Ok(tag.clone())
             }
         }
@@ -650,7 +697,7 @@ pub fn start(project_path: &Path, force_build: bool, remote: &Option<String>) ->
 
     // initializeCommand runs on the host before the container is created/started.
     if let Some(cmd) = &spec.lifecycle.initialize {
-        run_on_host(&spec.base_dir, "initializeCommand", cmd)?;
+        run_on_host(&spec.base_dir, "initializeCommand", cmd, remote)?;
     }
 
     // When (re)creating, resolve features up front so their container-creation
@@ -841,6 +888,28 @@ fn ssh_output(host: &str, script: &str) -> Result<std::process::Output> {
     Ok(out)
 }
 
+// Writes `content` to `path` on the remote host.
+fn ssh_write_file(host: &str, path: &str, content: &str) -> Result<()> {
+    use std::io::Write as _;
+    let (mut cmd, dest) = crate::ssh::base_command(host);
+    cmd.arg(&dest)
+        .arg(format!("cat > {}", crate::docker::shell_quote(path)));
+    cmd.stdin(Stdio::piped()).stdout(Stdio::null());
+    crate::verbose::trace(&cmd);
+    let mut child = cmd.spawn().context("spawning ssh")?;
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(content.as_bytes())
+        .context("writing to ssh stdin")?;
+    let status = child.wait().context("waiting for ssh")?;
+    if !status.success() {
+        bail!("writing {path} on {host} failed");
+    }
+    Ok(())
+}
+
 // One SSH call: probe the candidate config locations (same precedence as the
 // local find_config) and cat the first one that exists. Output format:
 // NUL-terminated path, then raw file bytes. Exit code 1 = no config found;
@@ -962,24 +1031,44 @@ fn run_in_container(
     }
 }
 
-// Runs initializeCommand on the host, with the .devcontainer dir as cwd.
-fn run_on_host(dir: &Path, label: &str, cmd: &Cmd) -> Result<()> {
+// Runs initializeCommand on the host, with the .devcontainer dir as cwd. The
+// "host" is wherever the project files live: the local machine, or — with
+// --remote — the remote host, over ssh (the dir doesn't exist locally there).
+fn run_on_host(dir: &Path, label: &str, cmd: &Cmd, remote: &Option<String>) -> Result<()> {
     println!("[graft] {label} (host)");
-    let shell = |s: &str| {
-        Command::new("sh")
-            .arg("-c")
-            .arg(s)
-            .current_dir(dir)
-            .status()
-    };
-    let exec = |argv: &[String]| {
-        Command::new(&argv[0])
-            .args(&argv[1..])
-            .current_dir(dir)
-            .status()
-    };
 
-    let check = |status: std::io::Result<std::process::ExitStatus>, what: &str| -> Result<()> {
+    let run_one = |what: &str, one: &OneCmd| -> Result<()> {
+        let status = match (remote, one) {
+            (None, OneCmd::Shell(s)) => Command::new("sh")
+                .arg("-c")
+                .arg(s)
+                .current_dir(dir)
+                .status(),
+            (None, OneCmd::Exec(argv)) => Command::new(&argv[0])
+                .args(&argv[1..])
+                .current_dir(dir)
+                .status(),
+            (Some(host), one) => {
+                // Force `sh` semantics for the shell form rather than running
+                // the string in the remote user's login shell.
+                let body = match one {
+                    OneCmd::Shell(s) => format!("sh -c {}", crate::docker::shell_quote(s)),
+                    OneCmd::Exec(argv) => argv
+                        .iter()
+                        .map(|a| crate::docker::shell_quote(a))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                };
+                let script = format!(
+                    "cd {} && {body}",
+                    crate::docker::shell_quote(&dir.to_string_lossy())
+                );
+                let (mut c, dest) = crate::ssh::base_command(host);
+                c.arg(dest).arg(script);
+                crate::verbose::trace(&c);
+                c.status()
+            }
+        };
         if !status.context("spawning host command")?.success() {
             bail!("{what} failed");
         }
@@ -987,15 +1076,15 @@ fn run_on_host(dir: &Path, label: &str, cmd: &Cmd) -> Result<()> {
     };
 
     match cmd {
-        Cmd::Shell(s) => check(shell(s), label),
-        Cmd::Exec(argv) if !argv.is_empty() => check(exec(argv), label),
+        Cmd::Shell(s) => run_one(label, &OneCmd::Shell(s.clone())),
+        Cmd::Exec(argv) if !argv.is_empty() => run_one(label, &OneCmd::Exec(argv.clone())),
         Cmd::Exec(_) => Ok(()),
         Cmd::Named(map) => {
             for (name, one) in map {
                 println!("[graft]   {name}");
                 match one {
-                    OneCmd::Shell(s) => check(shell(s), name)?,
-                    OneCmd::Exec(argv) if !argv.is_empty() => check(exec(argv), name)?,
+                    OneCmd::Shell(_) => run_one(name, one)?,
+                    OneCmd::Exec(argv) if !argv.is_empty() => run_one(name, one)?,
                     OneCmd::Exec(_) => {}
                 }
             }
@@ -1006,6 +1095,41 @@ fn run_on_host(dir: &Path, label: &str, cmd: &Cmd) -> Result<()> {
 
 // ── docker compose helpers ─────────────────────────────────────────────────────
 
+// Builds a command for docker operations that read *files* from disk — a
+// compose project or a build context. Locally that's plain `docker <args>`
+// run in `dir`. With --remote those files live on the remote host, and
+// DOCKER_HOST can't help: the docker CLI reads compose files / build contexts
+// client-side. So the whole command runs on the remote over ssh instead.
+fn docker_files_command(remote: &Option<String>, dir: Option<&Path>, args: &[String]) -> Command {
+    match remote {
+        None => {
+            let mut cmd = Command::new("docker");
+            cmd.args(args);
+            if let Some(d) = dir {
+                cmd.current_dir(d);
+            }
+            cmd
+        }
+        Some(host) => {
+            let mut script = String::new();
+            if let Some(d) = dir {
+                script.push_str(&format!(
+                    "cd {} && ",
+                    crate::docker::shell_quote(&d.to_string_lossy())
+                ));
+            }
+            script.push_str("docker");
+            for a in args {
+                script.push(' ');
+                script.push_str(&crate::docker::shell_quote(a));
+            }
+            let (mut cmd, dest) = crate::ssh::base_command(host);
+            cmd.arg(dest).arg(script);
+            cmd
+        }
+    }
+}
+
 fn compose_file_args(files: &[String]) -> Vec<String> {
     let mut args = vec![];
     for f in files {
@@ -1015,14 +1139,19 @@ fn compose_file_args(files: &[String]) -> Vec<String> {
     args
 }
 
-fn compose_up(remote: &Option<String>, dir: &Path, files: &[String], extra: &[&str]) -> Result<()> {
-    let mut args = compose_file_args(files);
+fn compose_up(
+    remote: &Option<String>,
+    dir: &Path,
+    project: &str,
+    files: &[String],
+    extra: &[&str],
+) -> Result<()> {
+    let mut args = vec!["compose".to_string(), "-p".to_string(), project.to_string()];
+    args.extend(compose_file_args(files));
     args.extend(["up".to_string(), "-d".to_string()]);
     args.extend(extra.iter().map(|s| s.to_string()));
 
-    let mut cmd = Command::new("docker");
-    cmd.arg("compose").args(&args).current_dir(dir);
-    crate::docker::docker_host_env(&mut cmd, remote);
+    let mut cmd = docker_files_command(remote, Some(dir), &args);
     crate::verbose::trace(&cmd);
     let status = cmd.status().context("running docker compose up")?;
     if !status.success() {
@@ -1036,22 +1165,28 @@ fn compose_up(remote: &Option<String>, dir: &Path, files: &[String], extra: &[&s
 fn compose_ps(
     remote: &Option<String>,
     dir: &Path,
+    project: &str,
     files: &[String],
     service: &str,
     all: bool,
 ) -> Result<String> {
-    let mut args = compose_file_args(files);
+    let mut args = vec!["compose".to_string(), "-p".to_string(), project.to_string()];
+    args.extend(compose_file_args(files));
     args.push("ps".to_string());
     if all {
         args.push("-a".to_string());
     }
     args.extend(["-q".to_string(), service.to_string()]);
 
-    let mut cmd = Command::new("docker");
-    cmd.arg("compose").args(&args).current_dir(dir);
-    crate::docker::docker_host_env(&mut cmd, remote);
+    let mut cmd = docker_files_command(remote, Some(dir), &args);
     crate::verbose::trace(&cmd);
     let output = cmd.output().context("docker compose ps")?;
+    if !output.status.success() {
+        bail!(
+            "docker compose ps failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
 
     Ok(String::from_utf8(output.stdout)?
         .lines()

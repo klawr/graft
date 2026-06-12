@@ -136,7 +136,10 @@ ll = "ls -la"
 The config is JSONC and graft supports a useful subset of the spec. All three
 project forms work:
 
-- **`dockerComposeFile`** + `service` — graft drives `docker compose`.
+- **`dockerComposeFile`** + `service` — graft drives `docker compose`, under a
+  project name derived from the project path (`-p graft-<name>-<hash>`), so
+  two projects whose compose files both live in `.devcontainer/` don't collide
+  on compose's directory-derived project name.
 - **`image`** — graft runs the image as a `sleep infinity` container with the
   workspace bind-mounted (honoring `workspaceFolder`/`workspaceMount`, `mounts`,
   and `runArgs`).
@@ -196,6 +199,13 @@ The destination is anything your SSH client understands:
   ssh calls, since both go through your local `ssh`).
 - `user@host:2222` — a non-standard SSH port (also accepted for the
   config-probe and `ssh -L` tunnel connections, where it becomes `-p 2222`).
+
+Operations that only talk to the daemon (exec, cp, run, inspect) go through
+`DOCKER_HOST`. Operations that read project *files* — `docker compose`,
+`docker build`, and `initializeCommand` — run on the remote host over ssh,
+because the docker CLI reads compose files and build contexts client-side. So
+for a remote compose/build project, `docker compose`/`docker build` must be
+installed on the remote host (they don't need to exist locally).
 
 Connections must be non-interactive (key/agent auth); if something fails, run
 with `-v` to see each command and `-vv`/`-vvv` for ssh's own debug output.
