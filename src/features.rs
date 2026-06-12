@@ -401,11 +401,10 @@ fn oras_available() -> bool {
 // return the directory holding install.sh + devcontainer-feature.json.
 fn pull_and_extract(reference: &str, work: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(work)?;
-    let status = Command::new("oras")
-        .args(["pull", reference])
-        .current_dir(work)
-        .status()
-        .context("running oras pull")?;
+    let mut cmd = Command::new("oras");
+    cmd.args(["pull", reference]).current_dir(work);
+    crate::verbose::trace(&cmd);
+    let status = cmd.status().context("running oras pull")?;
     if !status.success() {
         bail!("oras pull failed for feature {reference}");
     }
@@ -417,13 +416,10 @@ fn pull_and_extract(reference: &str, work: &Path) -> Result<PathBuf> {
 
     let content = work.join("content");
     std::fs::create_dir_all(&content)?;
-    let status = Command::new("tar")
-        .arg("xf")
-        .arg(&layer)
-        .arg("-C")
-        .arg(&content)
-        .status()
-        .context("extracting feature tarball")?;
+    let mut cmd = Command::new("tar");
+    cmd.arg("xf").arg(&layer).arg("-C").arg(&content);
+    crate::verbose::trace(&cmd);
+    let status = cmd.status().context("extracting feature tarball")?;
     if !status.success() {
         bail!("failed to extract feature {reference}");
     }

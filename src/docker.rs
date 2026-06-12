@@ -23,6 +23,7 @@ impl Docker {
         let mut c = Command::new("docker");
         c.args(args);
         docker_host_env(&mut c, &self.remote);
+        crate::verbose::trace(&c);
         c
     }
 
@@ -199,8 +200,15 @@ fn sanitize_key(key: &str) -> String {
 /// when a remote is configured. No-op locally.
 pub fn docker_host_env(cmd: &mut Command, remote: &Option<String>) {
     if let Some(host) = remote {
-        cmd.env("DOCKER_HOST", format!("ssh://{host}"));
+        cmd.env("DOCKER_HOST", docker_host(host));
     }
+}
+
+/// The DOCKER_HOST value for a `--remote` destination. Docker's ssh connection
+/// helper accepts aliases from ~/.ssh/config and user@host:port, so the spec
+/// passes through as-is (an `ssh://` prefix typed by the user is tolerated).
+pub fn docker_host(remote: &str) -> String {
+    format!("ssh://{}", remote.strip_prefix("ssh://").unwrap_or(remote))
 }
 
 /// POSIX single-quote escaping: wrap in single quotes, and turn any embedded

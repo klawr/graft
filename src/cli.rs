@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -13,10 +13,18 @@ use std::path::PathBuf;
         hooks, grafts your environment on top, and forwards container ports to the host."
 )]
 pub struct Cli {
-    /// SSH remote to operate on (user@host); all Docker operations run against
-    /// the remote daemon via DOCKER_HOST=ssh://user@host
-    #[arg(long, short, global = true, value_name = "USER@HOST")]
+    /// SSH remote to operate on; all Docker operations run against the remote
+    /// daemon via DOCKER_HOST=ssh://…. Accepts any form the SSH client
+    /// understands: a bare Host alias from ~/.ssh/config, user@host, or
+    /// user@host:port (for a non-standard SSH port).
+    #[arg(long, short, global = true, value_name = "SSH_DEST")]
     pub remote: Option<String>,
+
+    /// Show what graft is doing: print every docker/ssh command it runs and
+    /// pass -v to graft's own ssh connections (config probe, port tunnels).
+    /// Repeat for more ssh verbosity (-vv, -vvv).
+    #[arg(long, short, global = true, action = ArgAction::Count)]
+    pub verbose: u8,
 
     #[command(subcommand)]
     pub command: Command,
@@ -26,20 +34,33 @@ pub struct Cli {
 pub enum Command {
     /// Start a devcontainer and graft in
     #[command(
-        long_about = "Find devcontainer.json in PATH (default: current directory), bring the \
-            container up, run lifecycle hooks and features, inject your environment, \
-            then open an interactive shell.\n\n\
+        long_about = "Read the project's devcontainer config — looked up under PATH (default: \
+            current directory) as .devcontainer/devcontainer.json, .devcontainer.json, or \
+            .devcontainer/<folder>/devcontainer.json — bring the container up, run lifecycle \
+            hooks and features, inject your environment, then open an interactive shell.\n\n\
             Supports dockerComposeFile, image, build, and dockerFile backends. \
             Forwards ports declared in forwardPorts and any port that starts \
             listening at runtime. Config: ~/.config/graft/config.toml."
     )]
     Up {
-        /// Project path containing .devcontainer/ or .devcontainer.json
+        /// Project path containing the devcontainer config
         /// (defaults to current directory)
         path: Option<PathBuf>,
         /// Force-rebuild images and recreate the container from scratch
         #[arg(long)]
         build: bool,
+    },
+    /// Stop a project's devcontainer
+    #[command(
+        long_about = "Stop the container that `graft up` started for the project. The \
+            port-forwarding daemon notices the container stopping and exits on its own. \
+            The container is kept (with everything installed in it) and can be resumed \
+            with `graft up`."
+    )]
+    Down {
+        /// Project path containing the devcontainer config
+        /// (defaults to current directory)
+        path: Option<PathBuf>,
     },
     /// Graft into an already-running container
     #[command(
@@ -55,7 +76,9 @@ pub enum Command {
     #[command(name = "_forward", hide = true)]
     Forward {
         container: String,
+        /// Forward spec as serialized by PortForward::encode
+        /// (local:port or local:host:port)
         #[arg(long)]
-        port: Vec<u16>,
+        port: Vec<String>,
     },
 }

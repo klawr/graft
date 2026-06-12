@@ -13,7 +13,10 @@ pub fn enter(container: &str, workdir: &str, remote: &Option<String>) -> Result<
     // attaches over SSH (same mechanism the rest of graft uses).
     let prefix = match remote {
         None => String::new(),
-        Some(host) => format!("DOCKER_HOST=ssh://{} ", shell_quote(host)),
+        Some(host) => format!(
+            "DOCKER_HOST={} ",
+            shell_quote(&crate::docker::docker_host(host))
+        ),
     };
     let run_cmd = format!(
         "{prefix}docker exec -it --workdir {} {} {} -l",
@@ -23,6 +26,9 @@ pub fn enter(container: &str, workdir: &str, remote: &Option<String>) -> Result<
     );
 
     println!("[graft] entering {container}");
+    if crate::verbose::enabled() {
+        eprintln!("[graft] $ {run_cmd}");
+    }
 
     match config.session.multiplexer.as_str() {
         "tmux" => enter_tmux(container, &run_cmd),

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::docker::Docker;
+use crate::forward::PortForward;
 
 // Where the hash of the .devcontainer inputs is stored *inside* the container,
 // so we can tell on the next `graft up` whether the config drifted since this
@@ -104,7 +105,7 @@ struct Spec {
     // Extra files (besides the .devcontainer dir) to fold into the hash.
     hash_extra: Vec<PathBuf>,
     workspace_folder: String,
-    forward_ports: Vec<u16>,
+    forward_ports: Vec<PortForward>,
     lifecycle: Lifecycle,
     features: Vec<crate::features::FeatureRequest>,
     override_feature_order: Vec<String>,
@@ -118,7 +119,7 @@ struct Spec {
 pub struct Started {
     pub container: String,
     pub workdir: String,
-    pub forward_ports: Vec<u16>,
+    pub forward_ports: Vec<PortForward>,
     env: Vec<(String, String)>,
     post_attach: Option<Cmd>,
 }
@@ -421,6 +422,7 @@ impl ContainerBackend {
         let mut c = Command::new("docker");
         c.args(args);
         crate::docker::docker_host_env(&mut c, &self.remote);
+        crate::verbose::trace(&c);
         c
     }
 
@@ -531,30 +533,54 @@ fn mount_to_arg(m: &serde_json::Value, project_path: &Path) -> Option<String> {
     }
 }
 
-// Parses forwardPorts entries into plain port numbers. The spec allows integers
-// ("3000"), strings ("3000", "3000:3000", "3000/udp"). We extract only the
-// container-side port and ignore the protocol suffix.
-fn parse_forward_ports(values: Option<Vec<serde_json::Value>>) -> Vec<u16> {
+// Parses forwardPorts entries. The spec allows an integer (a port of the
+// primary container) or a "host:port" string, where host is another host on
+// the container network — typically a compose service ("db:5432"). On top of
+// that, a numeric prefix ("3000:8080") is read docker -p style as a
+// local-port:container-port mapping, since a purely numeric hostname is never
+// meaningful. A "/proto" suffix is tolerated and ignored (TCP only).
+fn parse_forward_ports(values: Option<Vec<serde_json::Value>>) -> Vec<PortForward> {
     values
         .unwrap_or_default()
         .into_iter()
         .filter_map(|v| match v {
-            serde_json::Value::Number(n) => n.as_u64().and_then(|n| u16::try_from(n).ok()),
-            serde_json::Value::String(s) => {
-                // Accept "PORT", "HOST:PORT", "PORT/proto" — take the last
-                // colon-separated token, then strip any "/proto" suffix.
-                let token = s.split(':').next_back().unwrap_or(&s);
-                token.split('/').next().unwrap_or(token).parse().ok()
-            }
+            serde_json::Value::Number(n) => n
+                .as_u64()
+                .and_then(|n| u16::try_from(n).ok())
+                .map(PortForward::same),
+            serde_json::Value::String(s) => parse_forward_entry(&s),
             _ => None,
         })
         .collect()
+}
+
+fn parse_forward_entry(s: &str) -> Option<PortForward> {
+    let s = s.split('/').next().unwrap_or(s);
+    match s.split_once(':') {
+        None => s.parse().ok().map(PortForward::same),
+        Some((prefix, port)) => {
+            let port: u16 = port.parse().ok()?;
+            match prefix.parse::<u16>() {
+                Ok(local) => Some(PortForward {
+                    local,
+                    host: None,
+                    port,
+                }),
+                Err(_) => Some(PortForward {
+                    local: port,
+                    host: Some(prefix.to_string()),
+                    port,
+                }),
+            }
+        }
+    }
 }
 
 fn docker_run(remote: &Option<String>, args: &[String]) -> Result<()> {
     let mut cmd = Command::new("docker");
     cmd.args(args);
     crate::docker::docker_host_env(&mut cmd, remote);
+    crate::verbose::trace(&cmd);
     let status = cmd.status().context("spawning docker")?;
     if !status.success() {
         bail!(
@@ -569,6 +595,7 @@ fn docker_capture(remote: &Option<String>, args: &[&str]) -> Result<String> {
     let mut cmd = Command::new("docker");
     cmd.args(args);
     crate::docker::docker_host_env(&mut cmd, remote);
+    crate::verbose::trace(&cmd);
     let out = cmd.output().context("spawning docker")?;
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -713,6 +740,22 @@ pub fn start(project_path: &Path, force_build: bool, remote: &Option<String>) ->
     })
 }
 
+/// Stops the container `graft up` manages for this project, if one exists.
+/// The container is kept so `graft up` can resume it with everything intact.
+pub fn stop(project_path: &Path, remote: &Option<String>) -> Result<()> {
+    let spec = load_spec(project_path, remote)?;
+    match spec.backend.existing()? {
+        Some(id) => {
+            println!("[graft] stopping {id}");
+            docker_run(remote, &["stop".to_string(), id])
+        }
+        None => {
+            println!("[graft] no container exists for this devcontainer");
+            Ok(())
+        }
+    }
+}
+
 // Writes containerEnv/remoteEnv to /etc/profile.d so login shells inherit it.
 // Lines are written verbatim (each shell-quoted for printf), so ${VAR}
 // references inside values expand when the profile is sourced.
@@ -745,21 +788,63 @@ fn exec_env(env: &BTreeMap<String, String>) -> Vec<(String, String)> {
         .collect()
 }
 
+// Devcontainer config lookup, per spec precedence: .devcontainer/devcontainer.json,
+// .devcontainer.json, then .devcontainer/<folder>/devcontainer.json (one level
+// deep). With several subfolder configs the first (alphabetically) wins, with a
+// warning — graft has no UI to pick one.
 fn find_config(project_path: &Path) -> Result<PathBuf> {
     let candidates = [
         project_path.join(".devcontainer").join("devcontainer.json"),
         project_path.join(".devcontainer.json"),
     ];
-    candidates
+    if let Some(p) = candidates.into_iter().find(|p| p.exists()) {
+        return Ok(p);
+    }
+
+    let mut subs: Vec<PathBuf> = std::fs::read_dir(project_path.join(".devcontainer"))
         .into_iter()
-        .find(|p| p.exists())
-        .with_context(|| format!("no devcontainer.json found in {}", project_path.display()))
+        .flatten()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path().join("devcontainer.json"))
+        .filter(|p| p.is_file())
+        .collect();
+    subs.sort();
+    if subs.len() > 1 {
+        eprintln!(
+            "[graft] multiple devcontainer configs found, using {}",
+            subs[0].display()
+        );
+    }
+    subs.into_iter().next().with_context(|| {
+        format!(
+            "no devcontainer config found in {} (looked for .devcontainer/devcontainer.json, \
+             .devcontainer.json, and .devcontainer/*/devcontainer.json)",
+            project_path.display()
+        )
+    })
 }
 
 // ── remote (SSH) file I/O helpers ─────────────────────────────────────────────
 
-// One SSH call: probe both candidate config locations and cat the first one
-// that exists. Output format: NUL-terminated path, then raw file bytes.
+// Runs `sh -c <script>` on the remote and returns its output. Port and
+// verbosity from the CLI are applied; the command line is traced at -v.
+fn ssh_output(host: &str, script: &str) -> Result<std::process::Output> {
+    let (mut cmd, dest) = crate::ssh::base_command(host);
+    cmd.arg(&dest)
+        .arg(format!("sh -c {}", crate::docker::shell_quote(script)));
+    crate::verbose::trace(&cmd);
+    let out = cmd.output().context("spawning ssh")?;
+    // With ssh -v the debug chatter lands on stderr; surface it.
+    if crate::verbose::enabled() && !out.stderr.is_empty() {
+        eprint!("{}", String::from_utf8_lossy(&out.stderr));
+    }
+    Ok(out)
+}
+
+// One SSH call: probe the candidate config locations (same precedence as the
+// local find_config) and cat the first one that exists. Output format:
+// NUL-terminated path, then raw file bytes. Exit code 1 = no config found;
+// anything else is an ssh/connection failure and is reported as such.
 fn ssh_find_and_read_config(host: &str, project_path: &Path) -> Result<(PathBuf, Vec<u8>)> {
     let dc = crate::docker::shell_quote(
         &project_path
@@ -769,19 +854,31 @@ fn ssh_find_and_read_config(host: &str, project_path: &Path) -> Result<(PathBuf,
     );
     let flat =
         crate::docker::shell_quote(&project_path.join(".devcontainer.json").to_string_lossy());
-    let script = format!(
-        "for f in {dc} {flat}; do [ -f \"$f\" ] && {{ printf '%s\\0' \"$f\"; cat \"$f\"; exit 0; }}; done; exit 1"
+    // Quoted dir + unquoted glob, so the shell expands */devcontainer.json.
+    let sub_glob = format!(
+        "{}/*/devcontainer.json",
+        crate::docker::shell_quote(&project_path.join(".devcontainer").to_string_lossy())
     );
-    let out = Command::new("ssh")
-        .args([
-            host,
-            &format!("sh -c {}", crate::docker::shell_quote(&script)),
-        ])
-        .output()
-        .context("spawning ssh")?;
+    let script = format!(
+        "for f in {dc} {flat} {sub_glob}; do [ -f \"$f\" ] && {{ printf '%s\\0' \"$f\"; cat \"$f\"; exit 0; }}; done; exit 1"
+    );
+    let out = ssh_output(host, &script)?;
     if !out.status.success() {
+        // ssh exits with the remote command's status; our probe script exits 1
+        // when nothing was found. Anything else (e.g. 255) means ssh itself
+        // failed — auth, unknown host, … — and must not masquerade as a
+        // missing config.
+        if out.status.code() != Some(1) {
+            bail!(
+                "ssh to {host} failed ({}): {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
         bail!(
-            "no devcontainer.json found in {} on {host}",
+            "no devcontainer config found in {} on {host} (looked for \
+             .devcontainer/devcontainer.json, .devcontainer.json, and \
+             .devcontainer/*/devcontainer.json)",
             project_path.display()
         );
     }
@@ -807,13 +904,14 @@ fn ssh_hash_inputs(host: &str, config_path: &Path, extra: &[PathBuf]) -> Result<
         "find {} -type f 2>/dev/null | sort | xargs sha256sum 2>/dev/null | sha256sum",
         targets.join(" ")
     );
-    let out = Command::new("ssh")
-        .args([
-            host,
-            &format!("sh -c {}", crate::docker::shell_quote(&script)),
-        ])
-        .output()
-        .context("spawning ssh")?;
+    let out = ssh_output(host, &script)?;
+    if !out.status.success() {
+        bail!(
+            "hashing devcontainer inputs on {host} failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
     // sha256sum output: "<hex>  -\n" — take just the hex token.
     let hash = String::from_utf8_lossy(&out.stdout)
         .split_whitespace()
@@ -925,6 +1023,7 @@ fn compose_up(remote: &Option<String>, dir: &Path, files: &[String], extra: &[&s
     let mut cmd = Command::new("docker");
     cmd.arg("compose").args(&args).current_dir(dir);
     crate::docker::docker_host_env(&mut cmd, remote);
+    crate::verbose::trace(&cmd);
     let status = cmd.status().context("running docker compose up")?;
     if !status.success() {
         bail!("docker compose up failed");
@@ -951,6 +1050,7 @@ fn compose_ps(
     let mut cmd = Command::new("docker");
     cmd.arg("compose").args(&args).current_dir(dir);
     crate::docker::docker_host_env(&mut cmd, remote);
+    crate::verbose::trace(&cmd);
     let output = cmd.output().context("docker compose ps")?;
 
     Ok(String::from_utf8(output.stdout)?
@@ -1170,6 +1270,30 @@ mod tests {
         assert!(a.starts_with("graft-proj-"), "got {a}");
         // same basename, different path → different name (no collision)
         assert_ne!(a, container_name(Path::new("/elsewhere/proj")));
+    }
+
+    #[test]
+    fn forward_ports_parse_all_spec_forms() {
+        let values = serde_json::json!([3000, "4000", "3000:8080", "db:5432", "9000/tcp", false]);
+        let parsed = parse_forward_ports(Some(values.as_array().unwrap().clone()));
+        assert_eq!(
+            parsed,
+            vec![
+                PortForward::same(3000),
+                PortForward::same(4000),
+                PortForward {
+                    local: 3000,
+                    host: None,
+                    port: 8080
+                },
+                PortForward {
+                    local: 5432,
+                    host: Some("db".into()),
+                    port: 5432
+                },
+                PortForward::same(9000),
+            ]
+        );
     }
 
     #[test]

@@ -152,18 +152,18 @@ fn patch_binary(binary: &str, linker_name: &str) -> Result<TempFile> {
     let data = std::fs::read(binary).with_context(|| format!("reading {binary} to patch"))?;
     let tmp = TempFile::write(&format!("graft-patched-{}", file_stem(binary)), &data)?;
 
-    let status = Command::new("patchelf")
-        .arg("--set-interpreter")
+    let mut cmd = Command::new("patchelf");
+    cmd.arg("--set-interpreter")
         .arg(format!("{GRAFT_DIR}/{linker_name}"))
         .arg("--force-rpath")
         .arg("--set-rpath")
         .arg(GRAFT_LIB)
-        .arg(tmp.path())
-        .status()
-        .context(
-            "running patchelf — it is required to graft dynamically linked binaries \
+        .arg(tmp.path());
+    crate::verbose::trace(&cmd);
+    let status = cmd.status().context(
+        "running patchelf — it is required to graft dynamically linked binaries \
              (install it, e.g. `pacman -S patchelf` / `apt install patchelf`)",
-        )?;
+    )?;
     if !status.success() {
         bail!("patchelf failed to patch {binary}");
     }

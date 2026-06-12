@@ -15,8 +15,10 @@ impl Deps {
 }
 
 pub fn resolve(binary: &str) -> Result<Deps> {
-    let output = Command::new("ldd")
-        .arg(binary)
+    let mut cmd = Command::new("ldd");
+    cmd.arg(binary);
+    crate::verbose::trace(&cmd);
+    let output = cmd
         .output()
         .with_context(|| format!("running ldd on {binary}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout);

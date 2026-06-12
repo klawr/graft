@@ -13,13 +13,21 @@ It also doubles as a lightweight [devcontainer](https://containers.dev) runner:
 features, then grafts your environment on top.
 
 ```sh
-graft up                        # find .devcontainer, start it, graft in, open a shell
+graft up                        # find the devcontainer config, start it, graft in, open a shell
 graft up ./some/project         # same, for a specific project path
 graft up --build                # force-rebuild images and recreate the container
+graft down                      # stop the project's container (resume later with `graft up`)
 graft exec my-container         # graft into an already-running container by name/id
 graft up -r user@host           # operate against a remote Docker daemon over SSH
-graft up -r user@host ./project # remote + explicit path
+graft up -r myhost ./project    # remote via a Host alias from ~/.ssh/config
+graft up -r user@host:2222      # remote on a non-standard SSH port
+graft up -v                     # verbose: print every docker/ssh command graft runs
 ```
+
+`-r/--remote` and `-v/--verbose` work on every subcommand. `--verbose` prints
+each `docker`/`ssh` command before it runs (including the `DOCKER_HOST` it runs
+under); repeating it (`-vv`, `-vvv`) passes matching `-v` flags to graft's own
+ssh connections (config probe, port tunnels) for connection-level debugging.
 
 ## Install
 
@@ -117,8 +125,16 @@ ll = "ls -la"
 
 ## Devcontainer support
 
-`graft up` reads `devcontainer.json` (JSONC) and supports a useful subset of the
-spec. All three project forms work:
+`graft up [PATH]` looks for the devcontainer config under the project path
+(default: current directory), in spec order:
+
+1. `PATH/.devcontainer/devcontainer.json`
+2. `PATH/.devcontainer.json`
+3. `PATH/.devcontainer/<folder>/devcontainer.json` (one level deep; with
+   several, the alphabetically first wins and a warning lists the choice)
+
+The config is JSONC and graft supports a useful subset of the spec. All three
+project forms work:
 
 - **`dockerComposeFile`** + `service` — graft drives `docker compose`.
 - **`image`** — graft runs the image as a `sleep infinity` container with the
@@ -146,18 +162,43 @@ On top of that:
   formatting don't count) against a hash recorded inside the container at
   creation. If they differ it offers to recreate; otherwise it reuses the
   container. `graft up --build` forces a rebuild without prompting.
-- **Port forwarding** — `forwardPorts` from `devcontainer.json` are forwarded
-  automatically. Beyond that, graft watches `/proc/net/tcp` inside the running
-  container and dynamically forwards any port that starts listening to the same
-  port on the host. Forwarding uses `socat` locally or an `ssh -L` tunnel when
-  operating with `--remote`.
+- **Port forwarding** — `forwardPorts` entries are forwarded eagerly, from the
+  moment the container is up (connections just fail until the service starts
+  listening). This works even for minimal images where graft can't inspect
+  listeners (no shell in the container). All entry forms are supported:
+  - `3000` / `"3000"` — local port 3000 → port 3000 of the primary container.
+  - `"db:5432"` — local port 5432 → port 5432 of host `db` on the container
+    network (e.g. another compose service). Resolved via DNS inside the
+    primary container, falling back to matching container names / compose
+    naming on the container's networks; if the service isn't up yet, graft
+    keeps retrying and forwards once it appears.
+  - `"3000:8080"` — local port 3000 → port 8080 of the primary container
+    (docker `-p` style; a purely numeric prefix is read as a local port).
+
+  Beyond that, graft watches `/proc/net/tcp` inside the running container and
+  dynamically forwards any port that starts listening to the same port on the
+  host (loopback-only listeners are skipped — they're unreachable from outside
+  the container). Forwarding uses a built-in TCP proxy locally or an `ssh -L`
+  tunnel when operating with `--remote`.
 
 ## Remote containers
 
-`graft up -r user@host` (or `--remote`) points all Docker operations at the
-remote daemon over SSH (`DOCKER_HOST=ssh://user@host`). The `devcontainer.json`
-is read from the remote host, features are installed in the remote container, and
-port forwarding tunnels ports back to your local machine.
+`graft up -r <dest>` (or `--remote`) points all Docker operations at the remote
+daemon over SSH (`DOCKER_HOST=ssh://<dest>`). The devcontainer config is read
+from the remote host, features are installed in the remote container, and port
+forwarding tunnels ports back to your local machine.
+
+The destination is anything your SSH client understands:
+
+- `user@host` — explicit user and host.
+- `myhost` — a `Host` alias from `~/.ssh/config`; its `User`, `Port`,
+  `IdentityFile`, etc. all apply (both to `DOCKER_HOST` and to graft's direct
+  ssh calls, since both go through your local `ssh`).
+- `user@host:2222` — a non-standard SSH port (also accepted for the
+  config-probe and `ssh -L` tunnel connections, where it becomes `-p 2222`).
+
+Connections must be non-interactive (key/agent auth); if something fails, run
+with `-v` to see each command and `-vv`/`-vvv` for ssh's own debug output.
 
 ## How it works
 
@@ -205,8 +246,9 @@ grafting, `graft` opens a per-container `tmux` session; run from *inside* tmux i
   applied at creation.
 - Dynamic port forwarding requires the container's bridge IP to be reachable from
   the host. This works on Linux with Docker Engine. Docker Desktop on macOS/Windows
-  doesn't expose container IPs directly; declare ports in `forwardPorts` and graft
-  will still forward them via `socat` or `ssh -L`.
+  doesn't expose container IPs directly, so forwarding doesn't reach the
+  container there; with `--remote` the `ssh -L` tunnel targets the IP from the
+  remote host, which works.
 
 ## Roadmap
 
