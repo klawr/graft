@@ -19,6 +19,8 @@ const HASH_PATH: &str = "/opt/graft/devcontainer.hash";
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DevcontainerConfig {
+    // Human-readable label, used (when present) for the tmux session name.
+    name: Option<String>,
     // dockerComposeFile backend.
     docker_compose_file: Option<serde_json::Value>,
     service: Option<String>,
@@ -105,6 +107,8 @@ struct Spec {
     // Extra files (besides the .devcontainer dir) to fold into the hash.
     hash_extra: Vec<PathBuf>,
     workspace_folder: String,
+    // Human-readable tmux session name (e.g. "graft-myproject-1a2b3c").
+    session_name: String,
     forward_ports: Vec<PortForward>,
     lifecycle: Lifecycle,
     features: Vec<crate::features::FeatureRequest>,
@@ -118,6 +122,7 @@ struct Spec {
 /// workspace folder to drop the user into, and the (deferred) postAttach hook.
 pub struct Started {
     pub container: String,
+    pub session_name: String,
     pub workdir: String,
     pub forward_ports: Vec<PortForward>,
     env: Vec<(String, String)>,
@@ -161,6 +166,7 @@ fn load_spec(project_path: &Path, remote: &Option<String>) -> Result<Spec> {
         .context("parsing devcontainer.json")?;
     // Destructure up front so each field moves cleanly into the right place.
     let DevcontainerConfig {
+        name,
         docker_compose_file,
         service,
         image,
@@ -193,6 +199,7 @@ fn load_spec(project_path: &Path, remote: &Option<String>) -> Result<Spec> {
     let workspace_folder = workspace_folder
         .map(|wf| substitute_vars(&wf, project_path))
         .unwrap_or_else(|| format!("/workspaces/{basename}"));
+    let session_name = session_name(name.as_deref(), &basename, project_path);
 
     let lifecycle = Lifecycle {
         initialize: initialize_command,
@@ -291,6 +298,7 @@ fn load_spec(project_path: &Path, remote: &Option<String>) -> Result<Spec> {
         base_dir,
         hash_extra,
         workspace_folder,
+        session_name,
         forward_ports,
         lifecycle,
         features,
@@ -518,6 +526,23 @@ fn container_name(project_path: &Path) -> String {
         .collect();
     let h = fnv1a(project_path.to_string_lossy().as_bytes(), FNV_OFFSET);
     format!("graft-{base}-{:06x}", h & 0xff_ffff)
+}
+
+// A readable tmux session name: the devcontainer's `name` (or the project
+// basename when it has none), sanitized for tmux, plus a short path hash so two
+// projects that share a label don't land on the same session. We derive this
+// from the human label rather than the container id, whose compose form is an
+// opaque hash that makes "graft-<hash>" sessions impossible to tell apart.
+fn session_name(name: Option<&str>, basename: &str, project_path: &Path) -> String {
+    let label: String = name
+        .unwrap_or(basename)
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let label = label.trim_matches('-');
+    let label = if label.is_empty() { "workspace" } else { label };
+    let h = fnv1a(project_path.to_string_lossy().as_bytes(), FNV_OFFSET);
+    format!("graft-{label}-{:06x}", h & 0xff_ffff)
 }
 
 // Builds the `docker run` arguments for a ContainerBackend: the workspace mount
@@ -780,6 +805,7 @@ pub fn start(project_path: &Path, force_build: bool, remote: &Option<String>) ->
 
     Ok(Started {
         container: id,
+        session_name: spec.session_name,
         workdir: spec.workspace_folder,
         forward_ports: spec.forward_ports,
         env: hook_env,
@@ -1405,6 +1431,23 @@ mod tests {
         assert!(a.starts_with("graft-proj-"), "got {a}");
         // same basename, different path → different name (no collision)
         assert_ne!(a, container_name(Path::new("/elsewhere/proj")));
+    }
+
+    #[test]
+    fn session_name_prefers_devcontainer_label() {
+        let p = Path::new("/home/me/proj");
+        // The devcontainer's `name` wins and is sanitized for tmux.
+        let s = session_name(Some("My App (dev)"), "proj", p);
+        assert!(s.starts_with("graft-My-App--dev-"), "got {s}");
+        // Falls back to the basename when there's no name.
+        assert!(session_name(None, "proj", p).starts_with("graft-proj-"));
+        // Same label, different path → different session (no collision).
+        assert_ne!(
+            session_name(Some("app"), "proj", Path::new("/a/proj")),
+            session_name(Some("app"), "proj", Path::new("/b/proj")),
+        );
+        // An all-punctuation label degrades to a usable placeholder.
+        assert!(session_name(Some("***"), "proj", p).starts_with("graft-workspace-"));
     }
 
     #[test]

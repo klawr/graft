@@ -25,7 +25,12 @@ fn main() -> Result<()> {
             forward::spawn_daemon(&started.container, &cli.remote, &started.forward_ports);
             inject::graft(&started.container, &cli.remote)?;
             started.run_post_attach(&cli.remote)?;
-            container::enter(&started.container, &started.workdir, &cli.remote)?;
+            container::enter(
+                &started.container,
+                &started.session_name,
+                &started.workdir,
+                &cli.remote,
+            )?;
         }
         Command::Down { path } => {
             let project_path = path.unwrap_or_else(|| std::env::current_dir().unwrap());
@@ -33,7 +38,8 @@ fn main() -> Result<()> {
         }
         Command::Exec { container } => {
             inject::graft(&container, &cli.remote)?;
-            container::enter(&container, "/", &cli.remote)?;
+            let session_name = format!("graft-{container}");
+            container::enter(&container, &session_name, "/", &cli.remote)?;
         }
         Command::Forward { container, port } => {
             let ports: Vec<_> = port

@@ -3,7 +3,12 @@ use crate::docker::shell_quote;
 use anyhow::{Result, bail};
 use std::process::Command;
 
-pub fn enter(container: &str, workdir: &str, remote: &Option<String>) -> Result<()> {
+pub fn enter(
+    container: &str,
+    session_name: &str,
+    workdir: &str,
+    remote: &Option<String>,
+) -> Result<()> {
     let config = Config::load()?;
     let shell = &config.session.shell;
 
@@ -31,18 +36,18 @@ pub fn enter(container: &str, workdir: &str, remote: &Option<String>) -> Result<
     }
 
     match config.session.multiplexer.as_str() {
-        "tmux" => enter_tmux(container, &run_cmd),
+        "tmux" => enter_tmux(session_name, &run_cmd),
         "none" => enter_direct(&run_cmd),
         other => bail!("unknown session.multiplexer {other:?} (supported: \"tmux\", \"none\")"),
     }
 }
 
-// Opens (or reuses) a per-container tmux session. If graft itself is being run
+// Opens (or reuses) the named tmux session for this workspace. If graft itself is being run
 // from inside tmux, we must not nest — `attach-session` refuses that — so we
 // `switch-client` the current client to the graft session instead. Outside
 // tmux we attach normally.
-fn enter_tmux(container: &str, run_cmd: &str) -> Result<()> {
-    let session = format!("graft-{}", sanitize(container));
+fn enter_tmux(session_name: &str, run_cmd: &str) -> Result<()> {
+    let session = sanitize(session_name);
 
     // Create the session detached if it doesn't already exist (idempotent).
     Command::new("tmux")
