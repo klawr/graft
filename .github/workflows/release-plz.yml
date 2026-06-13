@@ -6,7 +6,6 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -19,21 +18,28 @@ jobs:
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - uses: release-plz/action@v0.5
+      - uses: taiki-e/install-action@v2
         with:
-          command: release-pr
+          tool: release-plz
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      # Bump version + changelog from conventional commits and commit straight to
+      # master. No release PR. [skip ci] keeps this commit from re-triggering CI.
+      - name: Bump version & changelog
+        run: release-plz update
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  release:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: release-plz/action@v0.5
-        with:
-          command: release
+      - name: Commit & push bump
+        run: |
+          if ! git diff --quiet; then
+            git commit -am "chore: release [skip ci]"
+            git push
+          fi
+      # Tag the (now bumped) version and publish the GitHub release, which
+      # triggers release.yml to build and attach the binaries.
+      - name: Release
+        run: release-plz release --git-token "$GITHUB_TOKEN"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
