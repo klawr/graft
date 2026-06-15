@@ -25,9 +25,9 @@ graft up -v                     # verbose: print every docker/ssh command graft 
 ```
 
 `-r/--remote` and `-v/--verbose` work on every subcommand. `--verbose` prints
-each `docker`/`ssh` command before it runs (including the `DOCKER_HOST` it runs
-under); repeating it (`-vv`, `-vvv`) passes matching `-v` flags to graft's own
-ssh connections (config probe, port tunnels) for connection-level debugging.
+each `docker`/`ssh` command before it runs; repeating it (`-vv`, `-vvv`) passes
+matching `-v` flags to graft's own ssh connections (config probe, port tunnels)
+for connection-level debugging.
 
 ## Install
 
@@ -61,11 +61,13 @@ make install BINDIR=~/.local/bin  # install to a user-local bin directory
 
 On the host:
 
-- `docker` (and `docker compose` for `graft up`)
+- `docker` (and `docker compose` for `graft up`) — for local use. With
+  `--remote`, docker runs on the *remote* host instead; locally you only need
+  `ssh` and `tar` (see [Remote containers](#remote-containers)).
 - `tmux` (for the interactive session; or set `multiplexer = "none"`)
 - `ldd` and `patchelf` (to resolve and re-link grafted binaries)
 - `oras` (only if your devcontainer uses `features`)
-- `ssh` (only for `--remote`)
+- `ssh` and `tar` (only for `--remote`)
 
 ## Configuration
 
@@ -186,26 +188,25 @@ On top of that:
 
 ## Remote containers
 
-`graft up -r <dest>` (or `--remote`) points all Docker operations at the remote
-daemon over SSH (`DOCKER_HOST=ssh://<dest>`). The devcontainer config is read
-from the remote host, features are installed in the remote container, and port
-forwarding tunnels ports back to your local machine.
+`graft up -r <dest>` (or `--remote`) runs the docker CLI *on the remote host*
+over SSH (`ssh <dest> docker …`), so **no local docker CLI is required** — only
+an `ssh` client (and `tar`, for copying your local environment in). The
+devcontainer config is read from the remote host, features are installed in the
+remote container, and port forwarding tunnels ports back to your local machine.
 
 The destination is anything your SSH client understands:
 
 - `user@host` — explicit user and host.
 - `myhost` — a `Host` alias from `~/.ssh/config`; its `User`, `Port`,
-  `IdentityFile`, etc. all apply (both to `DOCKER_HOST` and to graft's direct
-  ssh calls, since both go through your local `ssh`).
-- `user@host:2222` — a non-standard SSH port (also accepted for the
-  config-probe and `ssh -L` tunnel connections, where it becomes `-p 2222`).
+  `IdentityFile`, etc. all apply.
+- `user@host:2222` — a non-standard SSH port (becomes `-p 2222`).
 
-Operations that only talk to the daemon (exec, cp, run, inspect) go through
-`DOCKER_HOST`. Operations that read project *files* — `docker compose`,
-`docker build`, and `initializeCommand` — run on the remote host over ssh,
-because the docker CLI reads compose files and build contexts client-side. So
-for a remote compose/build project, `docker compose`/`docker build` must be
-installed on the remote host (they don't need to exist locally).
+Because docker runs remotely, `docker`/`docker compose`/`docker build` must be
+installed on the remote host (they don't need to exist locally). Your injected
+environment — binaries, their libraries, and config — lives locally and is
+streamed into the remote container over the SSH connection: directories are
+`tar`'d and unpacked by the remote daemon, individual files are piped straight
+in. That is why `tar` is needed locally for `--remote`.
 
 Connections must be non-interactive (key/agent auth); if something fails, run
 with `-v` to see each command and `-vv`/`-vvv` for ssh's own debug output.

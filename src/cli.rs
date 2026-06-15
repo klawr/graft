@@ -13,10 +13,11 @@ use std::path::PathBuf;
         hooks, grafts your environment on top, and forwards container ports to the host."
 )]
 pub struct Cli {
-    /// SSH remote to operate on; all Docker operations run against the remote
-    /// daemon via DOCKER_HOST=ssh://…. Accepts any form the SSH client
-    /// understands: a bare Host alias from ~/.ssh/config, user@host, or
-    /// user@host:port (for a non-standard SSH port).
+    /// SSH remote to operate on; the docker CLI is run on the remote host over
+    /// SSH (`ssh <dest> docker …`), so no local docker CLI is needed — only an
+    /// ssh client. Accepts any form the SSH client understands: a bare Host
+    /// alias from ~/.ssh/config, user@host, or user@host:port (for a
+    /// non-standard SSH port).
     #[arg(long, short, global = true, value_name = "SSH_DEST")]
     pub remote: Option<String>,
 

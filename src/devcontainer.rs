@@ -467,11 +467,7 @@ impl Backend for ContainerBackend {
 impl ContainerBackend {
     // A `docker` command targeting this backend's daemon (local or remote).
     fn docker(&self, args: &[&str]) -> Command {
-        let mut c = Command::new("docker");
-        c.args(args);
-        crate::docker::docker_host_env(&mut c, &self.remote);
-        crate::verbose::trace(&c);
-        c
+        crate::docker::command(&self.remote, args)
     }
 
     fn resolve_image(&self) -> Result<String> {
@@ -649,11 +645,10 @@ fn parse_forward_entry(s: &str) -> Option<PortForward> {
 }
 
 fn docker_run(remote: &Option<String>, args: &[String]) -> Result<()> {
-    let mut cmd = Command::new("docker");
-    cmd.args(args);
-    crate::docker::docker_host_env(&mut cmd, remote);
-    crate::verbose::trace(&cmd);
-    let status = cmd.status().context("spawning docker")?;
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let status = crate::docker::command(remote, &refs)
+        .status()
+        .context("spawning docker")?;
     if !status.success() {
         bail!(
             "docker {} failed",
@@ -664,11 +659,9 @@ fn docker_run(remote: &Option<String>, args: &[String]) -> Result<()> {
 }
 
 fn docker_capture(remote: &Option<String>, args: &[&str]) -> Result<String> {
-    let mut cmd = Command::new("docker");
-    cmd.args(args);
-    crate::docker::docker_host_env(&mut cmd, remote);
-    crate::verbose::trace(&cmd);
-    let out = cmd.output().context("spawning docker")?;
+    let out = crate::docker::command(remote, args)
+        .output()
+        .context("spawning docker")?;
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -1122,10 +1115,11 @@ fn run_on_host(dir: &Path, label: &str, cmd: &Cmd, remote: &Option<String>) -> R
 // ── docker compose helpers ─────────────────────────────────────────────────────
 
 // Builds a command for docker operations that read *files* from disk — a
-// compose project or a build context. Locally that's plain `docker <args>`
-// run in `dir`. With --remote those files live on the remote host, and
-// DOCKER_HOST can't help: the docker CLI reads compose files / build contexts
-// client-side. So the whole command runs on the remote over ssh instead.
+// compose project or a build context. Like `docker::command` it runs the CLI
+// remotely over ssh when `--remote` is set, but it additionally `cd`s into
+// `dir` first: compose files and build contexts are read client-side, i.e. on
+// the remote host where the docker CLI now runs, so the working directory has
+// to be the project dir *there*.
 fn docker_files_command(remote: &Option<String>, dir: Option<&Path>, args: &[String]) -> Command {
     match remote {
         None => {

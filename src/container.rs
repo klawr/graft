@@ -13,22 +13,35 @@ pub fn enter(
     let shell = &config.session.shell;
 
     // The command that opens an interactive shell inside the container. Values
-    // are shell-quoted because it's run through a shell (tmux pane / sh -c). For
-    // a remote daemon we prefix DOCKER_HOST=ssh://… so the local docker CLI
-    // attaches over SSH (same mechanism the rest of graft uses).
-    let prefix = match remote {
-        None => String::new(),
-        Some(host) => format!(
-            "DOCKER_HOST={} ",
-            shell_quote(&crate::docker::docker_host(host))
-        ),
-    };
-    let run_cmd = format!(
-        "{prefix}docker exec -it --workdir {} {} {} -l",
+    // are shell-quoted because it's run through a shell (tmux pane / sh -c). The
+    // local form runs the docker CLI directly; for a remote daemon we run the
+    // docker CLI *on the remote* over `ssh -t` (so it gets a PTY for `exec -it`),
+    // matching the rest of graft — no local docker CLI required.
+    let exec = format!(
+        "docker exec -it --workdir {} {} {} -l",
         shell_quote(workdir),
         shell_quote(container),
         shell_quote(shell)
     );
+    let run_cmd = match remote {
+        None => exec,
+        Some(host) => {
+            let (dest, port) = crate::ssh::split(host);
+            let mut s = String::from("ssh -t");
+            if let Some(p) = port {
+                s.push_str(&format!(" -p {p}"));
+            }
+            let v = crate::verbose::level().min(3);
+            if v > 0 {
+                s.push_str(&format!(" -{}", "v".repeat(v as usize)));
+            }
+            s.push(' ');
+            s.push_str(&shell_quote(&dest));
+            s.push(' ');
+            s.push_str(&shell_quote(&exec));
+            s
+        }
+    };
 
     println!("[graft] entering {container}");
     if crate::verbose::enabled() {

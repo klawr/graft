@@ -352,15 +352,16 @@ fn log_path(container: &str) -> PathBuf {
 }
 
 fn poll_listening_ports(container: &str, remote: &Option<String>) -> HashSet<u16> {
-    let mut cmd = Command::new("docker");
-    crate::docker::docker_host_env(&mut cmd, remote);
-    cmd.args([
-        "exec",
-        container,
-        "sh",
-        "-c",
-        "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null",
-    ]);
+    let mut cmd = crate::docker::command(
+        remote,
+        &[
+            "exec",
+            container,
+            "sh",
+            "-c",
+            "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null",
+        ],
+    );
     cmd.stdout(Stdio::piped()).stderr(Stdio::null());
     cmd.output()
         .ok()
@@ -423,14 +424,15 @@ fn is_loopback_hex(addr: &str) -> bool {
 }
 
 fn get_container_ip(container: &str, remote: &Option<String>) -> Option<String> {
-    let mut cmd = Command::new("docker");
-    crate::docker::docker_host_env(&mut cmd, remote);
-    cmd.args([
-        "inspect",
-        "--format",
-        "{{range .NetworkSettings.Networks}}{{.IPAddress}}\n{{end}}",
-        container,
-    ]);
+    let mut cmd = crate::docker::command(
+        remote,
+        &[
+            "inspect",
+            "--format",
+            "{{range .NetworkSettings.Networks}}{{.IPAddress}}\n{{end}}",
+            container,
+        ],
+    );
     cmd.stdout(Stdio::piped()).stderr(Stdio::null());
     cmd.output().ok().and_then(|o| {
         String::from_utf8_lossy(&o.stdout)
@@ -525,9 +527,7 @@ fn compose_service_matches(name: &str, service: &str) -> bool {
 
 // Runs a docker command and returns stdout, or None on spawn/exit failure.
 fn docker_stdout(remote: &Option<String>, args: &[&str]) -> Option<String> {
-    let mut cmd = Command::new("docker");
-    crate::docker::docker_host_env(&mut cmd, remote);
-    cmd.args(args);
+    let mut cmd = crate::docker::command(remote, args);
     cmd.stdout(Stdio::piped()).stderr(Stdio::null());
     let out = cmd.output().ok()?;
     if !out.status.success() {
@@ -537,9 +537,8 @@ fn docker_stdout(remote: &Option<String>, args: &[&str]) -> Option<String> {
 }
 
 fn is_container_running(container: &str, remote: &Option<String>) -> bool {
-    let mut cmd = Command::new("docker");
-    crate::docker::docker_host_env(&mut cmd, remote);
-    cmd.args(["inspect", "--format", "{{.State.Running}}", container]);
+    let mut cmd =
+        crate::docker::command(remote, &["inspect", "--format", "{{.State.Running}}", container]);
     cmd.stdout(Stdio::piped()).stderr(Stdio::null());
     cmd.output()
         .ok()

@@ -18,8 +18,8 @@ pub fn enabled() -> bool {
     level() > 0
 }
 
-/// Prints the command (with any explicitly-set env vars, e.g. DOCKER_HOST)
-/// to stderr in shell-pasteable form. No-op unless --verbose is set.
+/// Prints the command (with any explicitly-set env vars) to stderr in
+/// shell-pasteable form. No-op unless --verbose is set.
 pub fn trace(cmd: &Command) {
     if !enabled() {
         return;
