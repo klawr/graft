@@ -2,7 +2,7 @@
 # graft installer — downloads a prebuilt release binary from GitHub.
 #
 #   # latest release:
-#   curl -fsSL https://raw.githubusercontent.com/klawr/graft/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/klawr/graft/master/install.sh | sh
 #
 #   # a specific version / custom install location:
 #   GRAFT_VERSION=v0.1.0 GRAFT_BIN_DIR=/usr/local/bin ./install.sh
