@@ -5,8 +5,13 @@ on:
     branches: [main, master]
   pull_request:
 
+# Read-only by default; the release jobs opt into write access individually.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   check:
@@ -25,3 +30,75 @@ jobs:
         run: cargo test
       - name: Build
         run: cargo build --release
+
+  # Cut a release only after `check` passes, and only for pushes to master.
+  # `needs: check` is the dependency, so a red tree (fmt/clippy/test/build) can
+  # never be tagged. On pull requests this job is skipped by the `if`.
+  release-plz:
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      # Empty unless release-plz actually cut a release this run.
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: release-plz
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      # Bump version + changelog from conventional commits and commit straight to
+      # master. No release PR. [skip ci] keeps this commit from re-triggering CI.
+      - name: Bump version & changelog
+        run: release-plz update
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Commit & push bump
+        run: |
+          if ! git diff --quiet; then
+            git commit -am "chore: release [skip ci]"
+            git push
+          fi
+      # Tag the (now bumped) version and publish the GitHub release. Capture the
+      # released tag from the JSON output so the upload job knows what to build.
+      - name: Release
+        id: release
+        run: |
+          out="$(release-plz release --git-token "$GITHUB_TOKEN" -o json)"
+          echo "$out"
+          echo "tag=$(printf '%s' "$out" | jq -r '.releases[0].tag // ""')" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Build static musl binaries for x86_64 and aarch64 and attach them as
+  # .tar.gz assets to the release that release-plz just published.
+  upload:
+    needs: release-plz
+    if: needs.release-plz.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-plz.outputs.tag }}
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: graft
+          target: ${{ matrix.target }}
+          archive: graft-$target
+          ref: refs/tags/${{ needs.release-plz.outputs.tag }}
+          token: ${{ secrets.GITHUB_TOKEN }}
