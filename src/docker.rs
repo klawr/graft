@@ -216,7 +216,12 @@ impl Docker {
             crate::verbose::trace(&ssh);
             let status = ssh.status().context("spawning ssh docker exec for cp")?;
             if !status.success() {
-                bail!("docker cp (stream) failed: {} -> {}:{}", src, container, dest);
+                bail!(
+                    "docker cp (stream) failed: {} -> {}:{}",
+                    src,
+                    container,
+                    dest
+                );
             }
         }
         Ok(())
@@ -224,18 +229,24 @@ impl Docker {
 
     /// True if `path` is a regular file inside the container.
     pub fn file_exists(&self, container: &str, path: &str) -> bool {
-        command(&self.remote, &Self::exec_args(container, &["test", "-f", path]))
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        command(
+            &self.remote,
+            &Self::exec_args(container, &["test", "-f", path]),
+        )
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
     }
 
     /// True if `path` exists (file or directory) inside the container.
     pub fn path_exists(&self, container: &str, path: &str) -> bool {
-        command(&self.remote, &Self::exec_args(container, &["test", "-e", path]))
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        command(
+            &self.remote,
+            &Self::exec_args(container, &["test", "-e", path]),
+        )
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
     }
 
     /// True if `cmd` is on PATH inside the container.

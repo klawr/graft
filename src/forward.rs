@@ -537,8 +537,10 @@ fn docker_stdout(remote: &Option<String>, args: &[&str]) -> Option<String> {
 }
 
 fn is_container_running(container: &str, remote: &Option<String>) -> bool {
-    let mut cmd =
-        crate::docker::command(remote, &["inspect", "--format", "{{.State.Running}}", container]);
+    let mut cmd = crate::docker::command(
+        remote,
+        &["inspect", "--format", "{{.State.Running}}", container],
+    );
     cmd.stdout(Stdio::piped()).stderr(Stdio::null());
     cmd.output()
         .ok()
