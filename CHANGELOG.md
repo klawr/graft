@@ -1,52 +1,38 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [Unreleased]
-
-## [0.2.2](https://github.com/klawr/graft/compare/v0.2.1...v0.2.2) - 2026-06-15
-
-### Fixed
-
-- release ci
-
-## [0.2.1](https://github.com/klawr/graft/compare/v0.2.0...v0.2.1) - 2026-06-13
-
-### Other
-
-- stop useless PRs for release
-
-## [0.2.0](https://github.com/klawr/graft/compare/v0.1.1...v0.2.0) - 2026-06-13
+## [0.3.0] - 2026-06-15
 
 ### Added
+- Remove docker cli dependency for remote usage
+- Use git-cliff instead of release-plz
 
+### Fixed
+- Quality
+- Ci
+## [0.2.2] - 2026-06-15
+
+### Fixed
+- Release ci
+## [0.1.1] - 2026-06-13
+
+### Fixed
+- Use proper tmux session names
+## [0.1.0] - 2026-06-12
+
+### Added
+- Initial release of graft
+- Replace socat with built-in TCP proxy for port forwarding
+- Properly expand ~ in path
 - Update readme and cli docs, add remote flags, update port forwarding
-- properly expand ~ in path
-- replace socat with built-in TCP proxy for port forwarding
-- [**breaking**] initial release of graft
+
+### Documentation
+- Improve --help text for all commands
 
 ### Fixed
-
-- use proper tmux session names
+- Resolve symlinks and use container home for inject targets
+- Restore Docker ENV PATH for login shells
+- Formatting
+- Typo
 - Remote docker commands
-- typo
-- formatting
-- restore Docker ENV PATH for login shells
-- resolve symlinks and use container home for inject targets
 
-### Other
-
-- release v0.1.1
-- fix release-plz stage
-- add semantic versioning
-- add release workflow and fix install script
-- improve --help text for all commands
-
-## [0.1.1](https://github.com/klawr/graft/compare/v0.1.0...v0.1.1) - 2026-06-13
-
-### Fixed
-
-- use proper tmux session names
