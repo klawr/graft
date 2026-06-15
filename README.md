@@ -241,6 +241,12 @@ Statically linked binaries are copied and run directly, with no patching. After
 grafting, `graft` opens a per-container `tmux` session; run from *inside* tmux it
 `switch-client`s instead of nesting.
 
+The setup steps that write to root-owned locations (`/opt/graft`, `/graft`,
+`/etc/profile.d`, system wrappers) and feature install scripts run as root via
+`docker exec -u 0`, so grafting works even on images whose default `USER` is
+unprivileged. The interactive shell and devcontainer lifecycle hooks run as the
+container's normal user, so your environment and `$HOME` are the user's own.
+
 ## Limitations
 
 - A grafted binary's libraries must all resolve on the host; anything `ldd`

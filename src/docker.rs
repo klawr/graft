@@ -22,17 +22,38 @@ impl Docker {
         }
     }
 
-    fn exec_args<'a>(container: &'a str, argv: &[&'a str]) -> Vec<&'a str> {
-        let mut a = Vec::with_capacity(argv.len() + 2);
+    /// Builds the `exec [-u 0] <container> <argv>` argument list. `root` forces
+    /// the command to run as uid 0 regardless of the image's `USER`, which graft
+    /// needs for setup that writes to root-owned locations (`/opt/graft`,
+    /// `/graft`, `/etc/profile.d`); `docker exec -u 0` works even when the
+    /// daemon's containers default to an unprivileged user.
+    fn exec_args<'a>(container: &'a str, argv: &[&'a str], root: bool) -> Vec<&'a str> {
+        let mut a = Vec::with_capacity(argv.len() + 4);
         a.push("exec");
+        if root {
+            a.push("-u");
+            a.push("0");
+        }
         a.push(container);
         a.extend_from_slice(argv);
         a
     }
 
-    /// Runs `docker exec <container> <argv>`, inheriting stdio.
+    /// Runs `docker exec <container> <argv>` as the container's default user,
+    /// inheriting stdio.
     pub fn exec(&self, container: &str, argv: &[&str]) -> Result<()> {
-        let args = Self::exec_args(container, argv);
+        self.exec_with(container, argv, false)
+    }
+
+    /// Like [`exec`](Self::exec) but runs as root (`-u 0`). Used for graft's own
+    /// setup writes into root-owned paths, which would otherwise fail in images
+    /// whose default `USER` is unprivileged.
+    pub fn exec_root(&self, container: &str, argv: &[&str]) -> Result<()> {
+        self.exec_with(container, argv, true)
+    }
+
+    fn exec_with(&self, container: &str, argv: &[&str], root: bool) -> Result<()> {
+        let args = Self::exec_args(container, argv, root);
         let status = command(&self.remote, &args)
             .status()
             .context("spawning docker exec")?;
@@ -42,16 +63,23 @@ impl Docker {
         Ok(())
     }
 
-    /// Runs `docker exec [--workdir W] [-e K=V ...] <container> <argv>`,
-    /// inheriting stdio. Used for lifecycle hooks and feature install scripts.
+    /// Runs `docker exec [-u 0] [--workdir W] [-e K=V ...] <container> <argv>`,
+    /// inheriting stdio. Used for lifecycle hooks (which run as the container's
+    /// default user, per the devcontainer spec) and feature install scripts
+    /// (which the spec runs as root — pass `root = true`).
     pub fn exec_in(
         &self,
         container: &str,
         workdir: Option<&str>,
         env: &[(String, String)],
         argv: &[&str],
+        root: bool,
     ) -> Result<()> {
         let mut args: Vec<String> = vec!["exec".into()];
+        if root {
+            args.push("-u".into());
+            args.push("0".into());
+        }
         if let Some(wd) = workdir {
             args.push("--workdir".into());
             args.push(wd.into());
@@ -75,7 +103,7 @@ impl Docker {
 
     /// Runs `docker exec <container> <argv>` and returns captured stdout.
     pub fn exec_capture(&self, container: &str, argv: &[&str]) -> Result<String> {
-        let args = Self::exec_args(container, argv);
+        let args = Self::exec_args(container, argv, false);
         let out = command(&self.remote, &args)
             .output()
             .context("spawning docker exec")?;
@@ -210,7 +238,10 @@ impl Docker {
         } else {
             let file = std::fs::File::open(src).with_context(|| format!("open {src}"))?;
             let inner = format!("cat > {}", shell_quote(dest));
-            let script = remote_script(&["exec", "-i", container, "sh", "-c", &inner]);
+            // `-u 0`: local `docker cp` writes as root via the daemon, so this
+            // streaming fallback must too, or destinations under root-owned trees
+            // (e.g. /opt/graft) fail in images with an unprivileged default USER.
+            let script = remote_script(&["exec", "-u", "0", "-i", container, "sh", "-c", &inner]);
             let (mut ssh, dest_host) = crate::ssh::base_command(host);
             ssh.arg(dest_host).arg(script).stdin(Stdio::from(file));
             crate::verbose::trace(&ssh);
@@ -231,7 +262,7 @@ impl Docker {
     pub fn file_exists(&self, container: &str, path: &str) -> bool {
         command(
             &self.remote,
-            &Self::exec_args(container, &["test", "-f", path]),
+            &Self::exec_args(container, &["test", "-f", path], false),
         )
         .status()
         .map(|s| s.success())
@@ -242,7 +273,7 @@ impl Docker {
     pub fn path_exists(&self, container: &str, path: &str) -> bool {
         command(
             &self.remote,
-            &Self::exec_args(container, &["test", "-e", path]),
+            &Self::exec_args(container, &["test", "-e", path], false),
         )
         .status()
         .map(|s| s.success())
@@ -260,6 +291,7 @@ impl Docker {
                     "-c",
                     &format!("command -v {} >/dev/null 2>&1", shell_quote(cmd)),
                 ],
+                false,
             ),
         )
         .status()
@@ -267,11 +299,13 @@ impl Docker {
         .unwrap_or(false)
     }
 
-    /// `mkdir -p` for one or more directories inside the container.
+    /// `mkdir -p` for one or more directories inside the container. Runs as root
+    /// because graft's directories live under root-owned trees (`/opt/graft`,
+    /// `/graft`, and parents of system wrappers).
     pub fn mkdir_p(&self, container: &str, dirs: &[&str]) -> Result<()> {
         let mut argv = vec!["mkdir", "-p"];
         argv.extend_from_slice(dirs);
-        self.exec(container, &argv)
+        self.exec_root(container, &argv)
     }
 
     /// True if the one-shot task `key` has already completed in this container.
@@ -284,7 +318,7 @@ impl Docker {
     /// Records that the one-shot task `key` completed.
     pub fn mark_task_done(&self, container: &str, key: &str) -> Result<()> {
         let path = format!("{GRAFT_STATE}/{}", sanitize_key(key));
-        self.exec(
+        self.exec_root(
             container,
             &[
                 "sh",

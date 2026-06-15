@@ -223,10 +223,7 @@ impl Plan {
         if self.resolved.is_empty() {
             return Ok(());
         }
-        if docker
-            .exec(container, &["mkdir", "-p", FEATURES_DIR])
-            .is_err()
-        {
+        if docker.mkdir_p(container, &[FEATURES_DIR]).is_err() {
             return Ok(());
         }
         let mut container_env: BTreeMap<String, String> = BTreeMap::new();
@@ -374,7 +371,7 @@ fn validate_options(r: &Resolved) {
 // Copies a feature into the container and runs its install.sh as root.
 fn install_one(docker: &Docker, container: &str, r: &Resolved) -> Result<()> {
     let dest = format!("{FEATURES_DIR}/{}", r.meta.id);
-    docker.exec(container, &["rm", "-rf", &dest])?;
+    docker.exec_root(container, &["rm", "-rf", &dest])?;
     docker.cp(&r.dir.to_string_lossy(), container, &dest)?;
 
     println!("[graft] installing feature {}", r.reference);
@@ -384,6 +381,7 @@ fn install_one(docker: &Docker, container: &str, r: &Resolved) -> Result<()> {
         Some(&dest),
         &env,
         &["sh", "-c", "chmod +x ./install.sh && ./install.sh"],
+        true,
     )
 }
 

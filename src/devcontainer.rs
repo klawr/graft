@@ -841,7 +841,7 @@ fn write_env_profile(
         "printf '%s\\n' {} > /etc/profile.d/graft-env.sh",
         lines.join(" ")
     );
-    docker.exec(container, &["sh", "-c", &script])
+    docker.exec_root(container, &["sh", "-c", &script])
 }
 
 // Env to pass to hooks via `docker exec -e`. Values referencing other vars
@@ -1025,7 +1025,7 @@ fn run_in_container(
 ) -> bool {
     println!("[graft] {label}");
     let run = |argv: &[&str]| -> bool {
-        match docker.exec_in(container, Some(workdir), env, argv) {
+        match docker.exec_in(container, Some(workdir), env, argv, false) {
             Ok(()) => true,
             Err(e) => {
                 eprintln!("[graft] {label} failed (continuing): {e}");
@@ -1235,7 +1235,7 @@ fn write_hash(docker: &Docker, container: &str, hash: &str) -> Result<()> {
         "mkdir -p /opt/graft && printf %s {} > {HASH_PATH}",
         crate::docker::shell_quote(hash)
     );
-    docker.exec(container, &["sh", "-c", &script])
+    docker.exec_root(container, &["sh", "-c", &script])
 }
 
 // ── change detection ───────────────────────────────────────────────────────────

@@ -118,7 +118,7 @@ fn inject_binary(
             let patched = patch_binary(binary, ld)?;
             docker.cp(&patched.path().to_string_lossy(), container, &graft_binary)?;
             // Make our linker available at /graft/<ld> for the patched interpreter.
-            docker.exec(
+            docker.exec_root(
                 container,
                 &[
                     "cp",
@@ -133,7 +133,7 @@ fn inject_binary(
         }
     }
 
-    docker.exec(container, &["chmod", "+x", &graft_binary])?;
+    docker.exec_root(container, &["chmod", "+x", &graft_binary])?;
 
     install_wrapper(docker, container, &graft_binary, &target)?;
 
@@ -196,7 +196,7 @@ fn inject_config(
     // onto an existing directory nests it (dest/src) instead of overwriting, so
     // removing first makes the copy mirror the host exactly (and drops files
     // deleted on the host).
-    docker.exec(container, &["rm", "-rf", &target])?;
+    docker.exec_root(container, &["rm", "-rf", &target])?;
     docker.cp(cfg, container, &target)?;
 
     Ok(())
@@ -293,7 +293,7 @@ fn install_wrapper(
 
     ensure_parent(docker, container, target)?;
     docker.cp(&tmp.path().to_string_lossy(), container, target)?;
-    docker.exec(container, &["chmod", "+x", target])?;
+    docker.exec_root(container, &["chmod", "+x", target])?;
 
     Ok(())
 }
@@ -319,7 +319,7 @@ fn inject_docker_path(docker: &Docker, container: &str) -> Result<()> {
     }
     let script = format!("export PATH={}\n", crate::docker::shell_quote(&path));
     let tmp = TempFile::write("graft-path.sh", script.as_bytes())?;
-    docker.exec(container, &["mkdir", "-p", "/etc/profile.d"])?;
+    docker.mkdir_p(container, &["/etc/profile.d"])?;
     docker.cp(
         &tmp.path().to_string_lossy(),
         container,
@@ -372,7 +372,7 @@ fn inject_aliases(
     }
 
     let tmp = TempFile::write("graft-aliases.sh", content.as_bytes())?;
-    docker.exec(container, &["mkdir", "-p", "/etc/profile.d"])?;
+    docker.mkdir_p(container, &["/etc/profile.d"])?;
     docker.cp(
         &tmp.path().to_string_lossy(),
         container,
