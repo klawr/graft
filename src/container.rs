@@ -1,7 +1,8 @@
 use crate::config::Config;
 use crate::docker::shell_quote;
 use anyhow::{Result, bail};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 pub fn enter(
     container: &str,
@@ -15,8 +16,7 @@ pub fn enter(
     // The command that opens an interactive shell inside the container. Values
     // are shell-quoted because it's run through a shell (tmux pane / sh -c). The
     // local form runs the docker CLI directly; for a remote daemon we run the
-    // docker CLI *on the remote* over `ssh -t` (so it gets a PTY for `exec -it`),
-    // matching the rest of graft — no local docker CLI required.
+    // docker CLI *on the remote* over `ssh -tt`
     let exec = format!(
         "docker exec -it --workdir {} {} {} -l",
         shell_quote(workdir),
@@ -27,7 +27,7 @@ pub fn enter(
         None => exec,
         Some(host) => {
             let (dest, port) = crate::ssh::split(host);
-            let mut s = String::from("ssh -t");
+            let mut s = String::from("ssh -tt");
             if let Some(p) = port {
                 s.push_str(&format!(" -p {p}"));
             }
@@ -48,11 +48,57 @@ pub fn enter(
         eprintln!("[graft] $ {run_cmd}");
     }
 
-    match config.session.multiplexer.as_str() {
+    let started = Instant::now();
+    let result = match config.session.multiplexer.as_str() {
         "tmux" => enter_tmux(session_name, &run_cmd),
         "none" => enter_direct(&run_cmd),
         other => bail!("unknown session.multiplexer {other:?} (supported: \"tmux\", \"none\")"),
+    };
+
+    // A remote session that fails almost instantly is the signature of the SSH
+    // server refusing a PTY: `docker exec -it` then has no tty on its stdin and
+    // bails the moment the shell opens. Probe for it (only on a fast failure, so
+    // a normal shell exiting non-zero after real use doesn't trigger an extra
+    // connection) and point at the fix, which is server-side — no client flag,
+    // not even `-tt`, can override it.
+    if result.is_err()
+        && started.elapsed() < Duration::from_secs(2)
+        && let Some(host) = remote
+        && pty_denied(host)
+    {
+        eprintln!(
+            "[graft] the remote SSH server refused a PTY for this connection, so the\n\
+             [graft] interactive shell (`docker exec -it`) was dropped immediately. Fix it\n\
+             [graft] on the server: set `PermitTTY yes` in sshd_config, and remove any\n\
+             [graft] `restrict`/`no-pty` option on this key in ~/.ssh/authorized_keys, then\n\
+             [graft] reload sshd."
+        );
     }
+    result
+}
+
+// Probes whether the remote SSH server denies PTY allocation, which makes
+// graft's interactive `docker exec -it` shell impossible. Forces a PTY (`-tt`)
+// and runs `tty`: a server that refuses it makes ssh fail with "Pseudo-terminal
+// allocation request failed" (or, if it proceeds without one, `tty` prints "not
+// a tty"). Best-effort and quiet — any spawn error just yields false.
+fn pty_denied(remote: &str) -> bool {
+    let (mut cmd, dest) = crate::ssh::base_command(remote);
+    cmd.args(["-tt", "-o", "BatchMode=yes"])
+        .arg(dest)
+        .arg("tty")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let Ok(out) = cmd.output() else {
+        return false;
+    };
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    combined.contains("allocation request failed") || combined.contains("not a tty")
 }
 
 // Opens (or reuses) the named tmux session for this workspace. If graft itself is being run

@@ -835,13 +835,41 @@ fn write_env_profile(
     }
     let lines: Vec<String> = env
         .iter()
-        .map(|(k, v)| crate::docker::shell_quote(&format!("export {k}={v}")))
+        .map(|(k, v)| crate::docker::shell_quote(&format!("export {k}={}", quote_env_value(v))))
         .collect();
     let script = format!(
         "printf '%s\\n' {} > /etc/profile.d/graft-env.sh",
         lines.join(" ")
     );
     docker.exec_root(container, &["sh", "-c", &script])
+}
+
+// Renders an env value for a POSIX `export K=<value>` line. Literal runs are
+// shell-quoted so spaces and metacharacters (`code --wait`, `a;b`, `a'b`) are
+// safe, while `${VAR}` references are left bare so the login shell still expands
+// them — `normalize_env_value` deliberately rewrites `${containerEnv:X}` to
+// `${X}` for exactly that, so quoting the whole value would break it.
+fn quote_env_value(v: &str) -> String {
+    let mut out = String::new();
+    let mut rest = v;
+    while let Some(start) = rest.find("${") {
+        match rest[start..].find('}') {
+            Some(end_rel) => {
+                let end = start + end_rel + 1; // include the closing '}'
+                if start > 0 {
+                    out.push_str(&crate::docker::shell_quote(&rest[..start]));
+                }
+                out.push_str(&rest[start..end]); // ${VAR} kept bare
+                rest = &rest[end..];
+            }
+            // No closing brace — treat the remainder as a literal.
+            None => break,
+        }
+    }
+    if !rest.is_empty() {
+        out.push_str(&crate::docker::shell_quote(rest));
+    }
+    out
 }
 
 // Env to pass to hooks via `docker exec -e`. Values referencing other vars
@@ -1388,6 +1416,22 @@ mod tests {
         // PATH is reliably set; use it to exercise ${localEnv:...}.
         let path = std::env::var("PATH").unwrap();
         assert_eq!(substitute_vars("${localEnv:PATH}", p), path);
+    }
+
+    #[test]
+    fn quote_env_value_quotes_literals_but_expands_vars() {
+        // Plain literals with spaces/metacharacters get single-quoted whole.
+        assert_eq!(quote_env_value("code --wait"), "'code --wait'");
+        assert_eq!(quote_env_value("a;b&&c"), "'a;b&&c'");
+        assert_eq!(quote_env_value("it's"), "'it'\\''s'");
+        // ${VAR} references stay bare so the login shell still expands them
+        // (normalize_env_value rewrites ${containerEnv:X} to ${X}).
+        assert_eq!(quote_env_value("${PATH}"), "${PATH}");
+        assert_eq!(quote_env_value("${PATH}:/foo"), "${PATH}':/foo'");
+        assert_eq!(quote_env_value("${A} ${B}"), "${A}' '${B}");
+        assert_eq!(quote_env_value("pre ${X} post"), "'pre '${X}' post'");
+        // A dangling ${ with no closing brace is treated as a literal.
+        assert_eq!(quote_env_value("a${b"), "'a${b'");
     }
 
     #[test]
