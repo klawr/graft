@@ -1,6 +1,10 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [0.3.2] - 2026-06-17
+
+### Fixed
+- Use ssh -tt to enforce tty
 ## [0.3.1] - 2026-06-15
 
 ### Fixed
