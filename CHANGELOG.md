@@ -1,6 +1,11 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [0.4.2] - 2026-06-26
+
+### Fixed
+- User permissions for remote usage
+- Formatting
 ## [0.4.1] - 2026-06-26
 
 ### Fixed
