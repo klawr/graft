@@ -1412,7 +1412,9 @@ fn select_workdir(docker: &Docker, container: &str, configured: &str) -> String 
         } else if input.starts_with('/') {
             return input.to_string();
         } else {
-            eprintln!("[graft] Enter a number from the list or an absolute path starting with '/'.");
+            eprintln!(
+                "[graft] Enter a number from the list or an absolute path starting with '/'."
+            );
         }
     }
 }

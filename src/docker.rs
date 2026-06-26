@@ -269,8 +269,7 @@ impl Docker {
                 container,
             ],
         )
-        .output()
-        else {
+        .output() else {
             return vec![];
         };
         if !out.status.success() {
