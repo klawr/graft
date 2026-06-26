@@ -13,13 +13,13 @@ const GRAFT_BIN: &str = "/opt/graft/bin";
 // 7 bytes, matching /lib64/, so PT_INTERP can be patched in place.
 const GRAFT_DIR: &str = "/graft";
 
-pub fn graft(container: &str, remote: &Option<String>) -> Result<()> {
+pub fn graft(container: &str, remote: &Option<String>, remote_user: Option<&str>) -> Result<()> {
     let config = Config::load()?;
     let docker = Docker::new(remote);
     docker.mkdir_p(container, &[GRAFT_LIB, GRAFT_BIN, GRAFT_DIR])?;
 
-    let home = container_home(&docker, container);
-    let uid_gid = container_user(&docker, container);
+    let home = container_home(&docker, container, remote_user);
+    let uid_gid = container_user(&docker, container, remote_user);
 
     for item in &config.inject {
         if let Some(binary) = &item.binary {
@@ -190,6 +190,11 @@ fn inject_config(
 
     if item.skip_if_exists && docker.path_exists(container, &target) {
         println!("[graft] {} config already present, skipping", item.name);
+        // Fix ownership even when skipping the copy — the files may be
+        // root-owned from a previous run.
+        if let Some(owner) = uid_gid {
+            chown_home_chain(docker, container, home, &target, owner)?;
+        }
         return Ok(());
     }
 
@@ -216,11 +221,48 @@ fn inject_config(
     docker.exec_root(container, &["rm", "-rf", &target])?;
     docker.cp(cfg, container, &target)?;
 
-    // Chown the target so the container user owns the copied files. The parent
-    // dirs are already correctly owned (created above as the container user),
-    // but docker cp preserves host uid/gid which may not match.
+    // Fix ownership of the entire path chain from home to target. The parent
+    // dirs were created as the container user above, but docker cp (especially
+    // in remote mode) may recreate intermediate dirs as root. Chowning the
+    // chain ensures the user can create siblings (e.g. .local/state) at runtime.
     if let Some(owner) = uid_gid {
-        docker.exec_root(container, &["chown", "-R", owner, &target])?;
+        chown_home_chain(docker, container, home, &target, owner)?;
+    }
+
+    Ok(())
+}
+
+// Chowns every path component between home (exclusive) and target (inclusive,
+// recursive) so the container user owns the full chain and can create siblings
+// (e.g. nvim writing .local/state next to .local/share) at runtime.
+fn chown_home_chain(
+    docker: &Docker,
+    container: &str,
+    home: &str,
+    target: &str,
+    owner: &str,
+) -> Result<()> {
+    let home_path = Path::new(home);
+    let target_path = Path::new(target);
+
+    if !target_path.starts_with(home_path) {
+        return Ok(());
+    }
+
+    // Collect the dirs between home and target (home excluded, target included).
+    let mut chain: Vec<&Path> = target_path
+        .ancestors()
+        .filter(|p| p.starts_with(home_path) && *p != home_path)
+        .collect();
+    chain.reverse();
+
+    for dir in &chain {
+        let s = dir.to_string_lossy();
+        if *dir == target_path {
+            docker.exec_root(container, &["chown", "-R", owner, &s])?;
+        } else {
+            docker.exec_root(container, &["chown", owner, &s])?;
+        }
     }
 
     Ok(())
@@ -351,21 +393,33 @@ fn inject_docker_path(docker: &Docker, container: &str) -> Result<()> {
     )
 }
 
-fn container_home(docker: &Docker, container: &str) -> String {
+// Detects the container user's home directory. Queries as `remote_user` when
+// set so $HOME reflects their account. Falls back to /root on failure.
+fn container_home(docker: &Docker, container: &str, remote_user: Option<&str>) -> String {
     docker
-        .exec_capture(container, &["sh", "-c", "echo $HOME"])
+        .exec_capture_as(container, remote_user, &["sh", "-c", "echo $HOME"])
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "/root".to_string())
 }
 
-// Returns "uid:gid" for the container's default user, or None when the user is
-// root (uid 0) — in which case chowning is unnecessary.
-fn container_user(docker: &Docker, container: &str) -> Option<String> {
+// Returns the owner to use for chown, or None when the container runs as root
+// and no `remoteUser` override is set (chowning is then unnecessary).
+// When `remote_user` is specified, returns it directly as the owner name
+// (chown accepts usernames). Otherwise detects uid:gid via `id`.
+fn container_user(
+    docker: &Docker,
+    container: &str,
+    remote_user: Option<&str>,
+) -> Option<String> {
+    if let Some(u) = remote_user {
+        return if u == "root" { None } else { Some(u.to_string()) };
+    }
     let out = docker
-        .exec_capture(
+        .exec_capture_as(
             container,
+            None,
             &["sh", "-c", "printf '%s:%s' \"$(id -u)\" \"$(id -g)\""],
         )
         .ok()?;

@@ -9,6 +9,7 @@ pub fn enter(
     session_name: &str,
     workdir: &str,
     remote: &Option<String>,
+    remote_user: Option<&str>,
 ) -> Result<()> {
     let config = Config::load()?;
     let shell = &config.session.shell;
@@ -17,12 +18,16 @@ pub fn enter(
     // are shell-quoted because it's run through a shell (tmux pane / sh -c). The
     // local form runs the docker CLI directly; for a remote daemon we run the
     // docker CLI *on the remote* over `ssh -tt`
-    let exec = format!(
-        "docker exec -it --workdir {} {} {} -l",
+    let mut exec = String::from("docker exec -it");
+    if let Some(u) = remote_user {
+        exec.push_str(&format!(" -u {}", shell_quote(u)));
+    }
+    exec.push_str(&format!(
+        " --workdir {} {} {} -l",
         shell_quote(workdir),
         shell_quote(container),
         shell_quote(shell)
-    );
+    ));
     let run_cmd = match remote {
         None => exec,
         Some(host) => {

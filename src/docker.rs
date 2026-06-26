@@ -117,6 +117,35 @@ impl Docker {
         Ok(String::from_utf8(out.stdout)?)
     }
 
+    /// Like [`exec_capture`](Self::exec_capture) but runs as `user` (`-u <user>`).
+    /// Pass `None` to run as the container's default user.
+    pub fn exec_capture_as(
+        &self,
+        container: &str,
+        user: Option<&str>,
+        argv: &[&str],
+    ) -> Result<String> {
+        let mut args: Vec<String> = vec!["exec".into()];
+        if let Some(u) = user {
+            args.push("-u".into());
+            args.push(u.into());
+        }
+        args.push(container.into());
+        args.extend(argv.iter().map(|s| s.to_string()));
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = command(&self.remote, &refs)
+            .output()
+            .context("spawning docker exec")?;
+        if !out.status.success() {
+            bail!(
+                "docker exec failed: {:?}\n{}",
+                argv,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8(out.stdout)?)
+    }
+
     /// `docker cp <container>:<src> <local_dst>` (works on stopped containers).
     /// With `--remote`, the remote docker writes a tar to its stdout, which is
     /// piped back over SSH and unpacked into `local_dst` here.

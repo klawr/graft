@@ -39,6 +39,10 @@ struct DevcontainerConfig {
     override_feature_install_order: Option<Vec<String>>,
     container_env: Option<BTreeMap<String, String>>,
     remote_env: Option<BTreeMap<String, String>>,
+    // The user VSCode (and graft) connects as inside the container. Overrides
+    // the image's default CMD user, which is often root even when a non-root
+    // user exists in the image (e.g. mcr.microsoft.com/devcontainers/* images).
+    remote_user: Option<String>,
     // Lifecycle hooks. Each may be a string ("sh -c"), an array (argv), or an
     // object of named commands. Absent fields deserialize to None.
     initialize_command: Option<Cmd>,
@@ -115,6 +119,7 @@ struct Spec {
     override_feature_order: Vec<String>,
     // Merged containerEnv + remoteEnv (remoteEnv wins on conflict).
     env: BTreeMap<String, String>,
+    remote_user: Option<String>,
     backend: Box<dyn Backend>,
 }
 
@@ -125,6 +130,9 @@ pub struct Started {
     pub session_name: String,
     pub workdir: String,
     pub forward_ports: Vec<PortForward>,
+    /// The user to run as inside the container (`remoteUser` in devcontainer.json).
+    /// `None` means use the container's default CMD user.
+    pub remote_user: Option<String>,
     env: Vec<(String, String)>,
     post_attach: Option<Cmd>,
 }
@@ -182,6 +190,7 @@ fn load_spec(project_path: &Path, remote: &Option<String>) -> Result<Spec> {
         override_feature_install_order,
         container_env,
         remote_env,
+        remote_user,
         initialize_command,
         on_create_command,
         update_content_command,
@@ -304,6 +313,7 @@ fn load_spec(project_path: &Path, remote: &Option<String>) -> Result<Spec> {
         features,
         override_feature_order,
         env,
+        remote_user,
         backend,
     })
 }
@@ -807,6 +817,7 @@ pub fn start(project_path: &Path, force_build: bool, remote: &Option<String>) ->
         session_name: spec.session_name,
         workdir,
         forward_ports: spec.forward_ports,
+        remote_user: spec.remote_user,
         env: hook_env,
         post_attach: spec.lifecycle.post_attach,
     })
