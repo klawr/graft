@@ -4,4 +4,10 @@ FROM rust:1-bookworm
 
 RUN rustup component add clippy rustfmt
 
+ARG UID=1000
+RUN useradd -m -u $UID dev \
+    && mkdir -p /workspace /usr/local/cargo \
+    && chown -R dev:dev /workspace /usr/local/cargo /usr/local/rustup
+
+USER dev
 WORKDIR /workspace

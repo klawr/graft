@@ -3,5 +3,6 @@
   "dockerComposeFile": "compose.yaml",
   "service": "dev",
   "workspaceFolder": "/workspace",
+  "remoteUser": "dev",
   "postCreateCommand": "cargo fetch"
 }

@@ -22,6 +22,7 @@ graft up -r user@host           # operate against a remote Docker daemon over SS
 graft up -r myhost ./project    # remote via a Host alias from ~/.ssh/config
 graft up -r user@host:2222      # remote on a non-standard SSH port
 graft up -v                     # verbose: print every docker/ssh command graft runs
+graft --version                 # print the installed version
 ```
 
 `-r/--remote` and `-v/--verbose` work on every subcommand. `--verbose` prints

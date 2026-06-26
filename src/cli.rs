@@ -4,6 +4,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "graft",
+    version,
     about = "Inject your environment into any container",
     long_about = "Inject your environment into any container.\n\n\
         graft copies your personal tools (editor, shell config, …) together with \
