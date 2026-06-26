@@ -19,6 +19,7 @@ pub fn graft(container: &str, remote: &Option<String>) -> Result<()> {
     docker.mkdir_p(container, &[GRAFT_LIB, GRAFT_BIN, GRAFT_DIR])?;
 
     let home = container_home(&docker, container);
+    let uid_gid = container_user(&docker, container);
 
     for item in &config.inject {
         if let Some(binary) = &item.binary {
@@ -37,6 +38,7 @@ pub fn graft(container: &str, remote: &Option<String>) -> Result<()> {
                 &home,
                 item,
                 cfg.to_string_lossy().as_ref(),
+                uid_gid.as_deref(),
             )?;
         }
     }
@@ -177,6 +179,7 @@ fn inject_config(
     home: &str,
     item: &Injectable,
     cfg: &str,
+    uid_gid: Option<&str>,
 ) -> Result<()> {
     let target = resolve_home(
         item.target_config
@@ -191,13 +194,34 @@ fn inject_config(
     }
 
     println!("[graft] injecting {} config → {target}", item.name);
-    ensure_parent(docker, container, &target)?;
+
+    // Create parent dirs as the container user when the target is under their
+    // home directory — `mkdir -p` as root would leave the whole chain
+    // (e.g. /home/dev/.local) root-owned, blocking the user from creating
+    // siblings later. For system paths (e.g. /usr/local/share) root is correct.
+    let parent = Path::new(&target)
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "/".to_string());
+    if uid_gid.is_some() && target.starts_with(home) {
+        docker.exec(container, &["mkdir", "-p", &parent])?;
+    } else {
+        docker.mkdir_p(container, &[&parent])?;
+    }
+
     // Replace any existing target before copying: `docker cp` of a directory
     // onto an existing directory nests it (dest/src) instead of overwriting, so
     // removing first makes the copy mirror the host exactly (and drops files
     // deleted on the host).
     docker.exec_root(container, &["rm", "-rf", &target])?;
     docker.cp(cfg, container, &target)?;
+
+    // Chown the target so the container user owns the copied files. The parent
+    // dirs are already correctly owned (created above as the container user),
+    // but docker cp preserves host uid/gid which may not match.
+    if let Some(owner) = uid_gid {
+        docker.exec_root(container, &["chown", "-R", owner, &target])?;
+    }
 
     Ok(())
 }
@@ -334,6 +358,19 @@ fn container_home(docker: &Docker, container: &str) -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "/root".to_string())
+}
+
+// Returns "uid:gid" for the container's default user, or None when the user is
+// root (uid 0) — in which case chowning is unnecessary.
+fn container_user(docker: &Docker, container: &str) -> Option<String> {
+    let out = docker
+        .exec_capture(
+            container,
+            &["sh", "-c", "printf '%s:%s' \"$(id -u)\" \"$(id -g)\""],
+        )
+        .ok()?;
+    let s = out.trim().to_string();
+    if s.starts_with("0:") { None } else { Some(s) }
 }
 
 // Expands a leading `~` to the container user's home directory.
