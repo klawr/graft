@@ -1,6 +1,14 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [0.4.0] - 2026-06-26
+
+### Added
+- Add version cli flag
+
+### Fixed
+- Select workspace if devcontainer config is incorrect
+- Formatting
 ## [0.3.2] - 2026-06-17
 
 ### Fixed
