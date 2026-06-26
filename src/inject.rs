@@ -408,13 +408,13 @@ fn container_home(docker: &Docker, container: &str, remote_user: Option<&str>) -
 // and no `remoteUser` override is set (chowning is then unnecessary).
 // When `remote_user` is specified, returns it directly as the owner name
 // (chown accepts usernames). Otherwise detects uid:gid via `id`.
-fn container_user(
-    docker: &Docker,
-    container: &str,
-    remote_user: Option<&str>,
-) -> Option<String> {
+fn container_user(docker: &Docker, container: &str, remote_user: Option<&str>) -> Option<String> {
     if let Some(u) = remote_user {
-        return if u == "root" { None } else { Some(u.to_string()) };
+        return if u == "root" {
+            None
+        } else {
+            Some(u.to_string())
+        };
     }
     let out = docker
         .exec_capture_as(
