@@ -796,10 +796,16 @@ pub fn start(project_path: &Path, force_build: bool, remote: &Option<String>) ->
         );
     }
 
+    let workdir = if docker.path_exists(&id, &spec.workspace_folder) {
+        spec.workspace_folder
+    } else {
+        select_workdir(&docker, &id, &spec.workspace_folder)
+    };
+
     Ok(Started {
         container: id,
         session_name: spec.session_name,
-        workdir: spec.workspace_folder,
+        workdir,
         forward_ports: spec.forward_ports,
         env: hook_env,
         post_attach: spec.lifecycle.post_attach,
@@ -1362,6 +1368,81 @@ fn fnv1a(data: &[u8], mut h: u64) -> u64 {
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     h
+}
+
+// ── workspace selection ────────────────────────────────────────────────────────
+
+// Called when the configured workspaceFolder doesn't exist in the container.
+// Shows mount destinations and /workspaces/* entries as numbered candidates and
+// lets the user pick one or type a custom path. Falls back to '/' without
+// prompting when stdin is not a terminal.
+fn select_workdir(docker: &Docker, container: &str, configured: &str) -> String {
+    let candidates = discover_workdirs(docker, container);
+
+    if candidates.is_empty() || !io::stdin().is_terminal() {
+        eprintln!(
+            "[graft] workspaceFolder '{configured}' not found in the container; falling back to '/'.\n\
+             [graft]   Add \"workspaceFolder\": \"<path>\" to devcontainer.json to avoid this."
+        );
+        return "/".to_string();
+    }
+
+    eprintln!("[graft] workspaceFolder '{configured}' not found in the container.");
+    eprintln!("[graft] Select a workspace directory (or press Enter for '/'):");
+    for (i, dir) in candidates.iter().enumerate() {
+        eprintln!("  {}) {dir}", i + 1);
+    }
+
+    loop {
+        print!("[graft] > ");
+        io::stdout().flush().ok();
+        let mut line = String::new();
+        if io::stdin().read_line(&mut line).is_err() || line.trim().is_empty() {
+            return "/".to_string();
+        }
+        let input = line.trim();
+        if let Ok(n) = input.parse::<usize>() {
+            if n >= 1 && n <= candidates.len() {
+                return candidates[n - 1].clone();
+            }
+            eprintln!(
+                "[graft] Enter a number between 1 and {} or an absolute path.",
+                candidates.len()
+            );
+        } else if input.starts_with('/') {
+            return input.to_string();
+        } else {
+            eprintln!("[graft] Enter a number from the list or an absolute path starting with '/'.");
+        }
+    }
+}
+
+// Collects workspace candidates: actual mount destinations from `docker inspect`
+// (the most relevant — the user's workspace is almost always a bind mount), plus
+// any subdirectories found under /workspaces and /workspace (the standard
+// devcontainer locations). Sorted and deduplicated.
+fn discover_workdirs(docker: &Docker, container: &str) -> Vec<String> {
+    let mut candidates = docker.inspect_mounts(container);
+
+    if let Ok(out) = docker.exec_capture(
+        container,
+        &[
+            "sh",
+            "-c",
+            "find /workspaces /workspace -maxdepth 1 -mindepth 1 -type d 2>/dev/null",
+        ],
+    ) {
+        for line in out.lines().map(str::trim).filter(|s| !s.is_empty()) {
+            let s = line.to_string();
+            if !candidates.contains(&s) {
+                candidates.push(s);
+            }
+        }
+    }
+
+    candidates.sort();
+    candidates.dedup();
+    candidates
 }
 
 // ── prompt ─────────────────────────────────────────────────────────────────────

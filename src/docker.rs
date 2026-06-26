@@ -258,6 +258,32 @@ impl Docker {
         Ok(())
     }
 
+    /// Returns the mount destination paths inside the container (from `docker inspect`).
+    pub fn inspect_mounts(&self, container: &str) -> Vec<String> {
+        let Ok(out) = command(
+            &self.remote,
+            &[
+                "inspect",
+                "--format",
+                "{{range .Mounts}}{{.Destination}}\n{{end}}",
+                container,
+            ],
+        )
+        .output()
+        else {
+            return vec![];
+        };
+        if !out.status.success() {
+            return vec![];
+        }
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        text.lines()
+            .map(|l| l.trim())
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect()
+    }
+
     /// True if `path` is a regular file inside the container.
     pub fn file_exists(&self, container: &str, path: &str) -> bool {
         command(
