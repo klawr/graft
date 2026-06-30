@@ -20,6 +20,9 @@ pub fn graft(container: &str, remote: &Option<String>, remote_user: Option<&str>
 
     let home = container_home(&docker, container, remote_user);
     let uid_gid = container_user(&docker, container, remote_user);
+    if let Some(owner) = uid_gid.as_deref() {
+        ensure_home_writable(&docker, container, &home, remote_user, owner)?;
+    }
 
     for item in &config.inject {
         if let Some(binary) = &item.binary {
@@ -229,6 +232,33 @@ fn inject_config(
         chown_home_chain(docker, container, home, &target, owner)?;
     }
 
+    Ok(())
+}
+
+// When the container user can't already write to their own `$HOME` (e.g. it
+// got auto-created as root — by Docker for a path with no image content, or
+// by an earlier graft run's `mkdir -p`, which runs as the container's default
+// user and so is root whenever that differs from `remoteUser`), chowns just
+// `home` itself, non-recursively. Gated on the writability probe rather than
+// done unconditionally: `home` is a directory graft didn't create, and may be
+// a bind mount from the host (chowning unconditionally would chown host
+// files) or — if `owner` were ever misdetected — could lock the real user out
+// of a `$HOME` that was already correctly owned. Non-recursive because
+// existing children (e.g. a mounted `.ssh`/`.gnupg`) may be intentionally
+// owned by someone else.
+fn ensure_home_writable(
+    docker: &Docker,
+    container: &str,
+    home: &str,
+    remote_user: Option<&str>,
+    owner: &str,
+) -> Result<()> {
+    let writable = docker
+        .exec_capture_as(container, remote_user, &["sh", "-c", "test -w \"$HOME\""])
+        .is_ok();
+    if !writable {
+        docker.exec_root(container, &["chown", owner, home])?;
+    }
     Ok(())
 }
 
