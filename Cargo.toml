@@ -1,6 +1,6 @@
 [package]
 name = "graft"
-version = "0.4.2"
+version = "0.4.3"
 edition = "2024"
 description = "Inject your environment into any container; a lightweight devcontainer runner."
 license = "MIT"

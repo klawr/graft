@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [0.4.3] - 2026-06-30
+
+### Fixed
+- Reuse existing ssh connections to stabilise connection creation
+- Make sure home is always writable
+- Preserve execute bit when streaming copies to remote
 ## [0.4.2] - 2026-06-26
 
 ### Fixed
