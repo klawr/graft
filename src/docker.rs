@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail};
+use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
 
 /// Runs `docker` commands against the local daemon, or — when `remote` is set —
@@ -266,7 +267,18 @@ impl Docker {
             }
         } else {
             let file = std::fs::File::open(src).with_context(|| format!("open {src}"))?;
-            let inner = format!("cat > {}", shell_quote(dest));
+            // `cat > dest` creates dest fresh, so its mode comes from the shell's
+            // umask, not from src — silently dropping the execute bit on every
+            // binary/shared-lib copy (invisible as root, which bypasses the
+            // permission check, but breaks exec for the real `remoteUser`).
+            // chmod afterward to restore src's actual mode.
+            let mode = meta.permissions().mode() & 0o777;
+            let inner = format!(
+                "cat > {} && chmod {:o} {}",
+                shell_quote(dest),
+                mode,
+                shell_quote(dest)
+            );
             // `-u 0`: local `docker cp` writes as root via the daemon, so this
             // streaming fallback must too, or destinations under root-owned trees
             // (e.g. /opt/graft) fail in images with an unprivileged default USER.
