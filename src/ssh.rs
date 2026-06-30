@@ -1,3 +1,7 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::os::unix::fs::DirBuilderExt;
+use std::path::PathBuf;
 use std::process::Command;
 
 /// Splits a `--remote` destination into the ssh destination and an optional
@@ -32,16 +36,39 @@ pub fn split(remote: &str) -> (String, Option<u16>) {
     (remote.to_string(), None)
 }
 
+/// Socket used to multiplex every ssh invocation against the same `--remote`
+/// destination over one already-authenticated connection (`ControlMaster`),
+/// keyed by the raw `remote` string so distinct hosts/ports get distinct
+/// sockets. A `graft up` issues dozens of separate `ssh` calls (one per
+/// `docker exec`/`cp`); without multiplexing each renegotiates its own TCP +
+/// auth handshake, which is slow and, on a flaky or non-default-port hop,
+/// occasionally just fails — silently degrading some operations (e.g.
+/// chown'ing injected config) rather than the whole command.
+fn control_path(remote: &str) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    remote.hash(&mut hasher);
+    let dir = std::env::temp_dir().join("graft-ssh");
+    let _ = std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir);
+    dir.join(format!("{:x}.sock", hasher.finish()))
+}
+
 /// Builds an `ssh` command for the remote with the port (from a `host:port`
-/// destination) and `--verbose` flags applied, and returns the destination
-/// separately — ssh options must precede the destination, so callers add
-/// their own options first, then the destination, then the remote command.
+/// destination), connection multiplexing, and `--verbose` flags applied, and
+/// returns the destination separately — ssh options must precede the
+/// destination, so callers add their own options first, then the
+/// destination, then the remote command.
 pub fn base_command(remote: &str) -> (Command, String) {
     let (dest, port) = split(remote);
     let mut c = Command::new("ssh");
     if let Some(p) = port {
         c.args(["-p", &p.to_string()]);
     }
+    c.args(["-o", "ControlMaster=auto", "-o", "ControlPersist=10m"]);
+    c.arg("-o")
+        .arg(format!("ControlPath={}", control_path(remote).display()));
     let v = crate::verbose::level().min(3);
     if v > 0 {
         c.arg(format!("-{}", "v".repeat(v as usize)));
